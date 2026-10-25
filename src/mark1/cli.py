@@ -1,6 +1,7 @@
 """Command line for Mark I.
 
     mark1 download  --start 2021-01-01 --end 2026-10-24
+    mark1 download-extras --start 2021-01-01 --end 2026-10-24
     mark1 build     --start 2021-01-01
     mark1 train     --run-dir runs/v1 --steps 50000 --d-model 128
     mark1 evaluate  --run-dir runs/v1
@@ -32,12 +33,26 @@ def cmd_download(a: argparse.Namespace) -> None:
     print(coverage().to_string(index=False))
 
 
+def cmd_download_extras(a: argparse.Namespace) -> None:
+    from mark1.data.extras import download_extras, extras_coverage
+    try:
+        download_extras(a.symbols, date.fromisoformat(a.start), date.fromisoformat(a.end), workers=a.workers, kinds=a.kinds)
+    finally:  # show what is on disk even if some downloads failed; re-running resumes from the zip cache
+        cov = extras_coverage()
+        print(cov.to_string(index=False) if len(cov) else "No extras on disk yet.")
+
+
 def cmd_build(a: argparse.Namespace) -> None:
     from mark1.data.store import load_panel
     from mark1.features.build import build_features, save_features
+    from mark1.features.extras import has_extras
     panel = load_panel(a.symbols, a.start, a.end)
     logging.info("panel: %d minutes x %d coins", panel.n_times, panel.n_assets)
-    fs = build_features(panel)
+    use = a.extras == "on" or (a.extras == "auto" and has_extras(config.EXTRAS_DIR))
+    if a.extras == "on" and not has_extras(config.EXTRAS_DIR):
+        raise SystemExit(f"No extras in {config.EXTRAS_DIR}. Run `mark1 download-extras` first.")
+    logging.info("extra dimensions (positioning, options vol, macro, events): %s", "on" if use else "off")
+    fs = build_features(panel, extras_dir=config.EXTRAS_DIR if use else None)
     save_features(fs, Path(a.out))
     logging.info("features saved to %s (%d asset + %d market features)", a.out, len(fs.asset_names), len(fs.market_names))
 
@@ -111,11 +126,22 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--workers", type=int, default=8)
     d.set_defaults(fn=cmd_download)
 
+    de = sub.add_parser("download-extras", help="download funding, futures metrics, premium, BVOL, context spot and FRED data")
+    de.add_argument("--symbols", nargs="+", default=config.DEFAULT_UNIVERSE)
+    de.add_argument("--start", default="2021-01-01")
+    de.add_argument("--end", default=_yesterday())
+    de.add_argument("--workers", type=int, default=8)
+    de.add_argument("--kinds", nargs="+", default=None, choices=["funding", "metrics", "premium", "bvol", "spot", "fred"],
+                    help="only these kinds (default: all)")
+    de.set_defaults(fn=cmd_download_extras)
+
     b = sub.add_parser("build", help="build the feature dataset from downloaded bars")
     b.add_argument("--symbols", nargs="+", default=config.DEFAULT_UNIVERSE)
     b.add_argument("--start", default=None)
     b.add_argument("--end", default=None)
     b.add_argument("--out", default=str(config.DATASET_DIR))
+    b.add_argument("--extras", choices=["auto", "on", "off"], default="auto",
+                   help="add positioning, options vol, macro and event features (auto: when downloaded)")
     b.set_defaults(fn=cmd_build)
 
     t = sub.add_parser("train", help="train Mark I")

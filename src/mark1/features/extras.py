@@ -38,7 +38,7 @@ FRED_LAG_DAYS = 2
 CLIP = 10.0
 
 POSITIONING_NAMES = ["funding_bps", "funding_chg_bps", "oi_chg_60", "oi_chg_1440", "toptrader_ls", "taker_ls",
-                     "premium_bps", "premium_60_bps", "has_futures"]
+                     "premium_bps", "premium_60_bps", "has_futures", "has_metrics"]
 MARKET_EXTRA_NAMES = ["btc_bvol", "btc_bvol_chg_1d", "eth_bvol", "eth_bvol_chg_1d", "has_bvol",
                       "gold_ret_60", "gold_ret_1440", "eur_ret_60", "eur_ret_1440", "has_fx",
                       "us10y_level", "us10y_chg_5d", "vix_level", "vix_chg_5d", "usd_chg_5d", "has_macro",
@@ -104,13 +104,18 @@ def positioning_features(grid: np.ndarray, symbols: list[str], extras_dir: Path)
         if met is not None and len(met):
             met = met.sort_index()
             st = met.index.to_numpy()
-            oi, ok_m = asof(grid, st, np.log(np.maximum(met["open_interest"].to_numpy(dtype=float), 1e-9)), max_age=np.timedelta64(30, "m"))
-            cols["oi_chg_60"] = _lagdiff(oi, 60) * 100
-            cols["oi_chg_1440"] = _lagdiff(oi, 1440) * 100
-            tt, _ = asof(grid, st, met["toptrader_ls_sum"].to_numpy(dtype=float), max_age=np.timedelta64(30, "m"))
-            tk, _ = asof(grid, st, met["taker_ls_vol"].to_numpy(dtype=float), max_age=np.timedelta64(30, "m"))
-            cols["toptrader_ls"] = np.log(np.maximum(tt, 1e-6))
-            cols["taker_ls"] = np.log(np.maximum(tk, 1e-6))
+            # The archive has rows with open interest exactly 0 and empty ratio cells (most of 2022):
+            # treat them as missing rather than as real values.
+            raw_oi = met["open_interest"].to_numpy(dtype=float)
+            log_oi = np.where(raw_oi > 0, np.log(np.where(raw_oi > 0, raw_oi, 1.0)), np.nan)
+            oi, ok_m = asof(grid, st, log_oi, max_age=np.timedelta64(30, "m"))
+            ok_m &= np.isfinite(oi)
+            cols["oi_chg_60"] = np.clip(_lagdiff(oi, 60) * 100, -50, 50)
+            cols["oi_chg_1440"] = np.clip(_lagdiff(oi, 1440) * 100, -50, 50)
+            for name, col in (("toptrader_ls", "toptrader_ls_sum"), ("taker_ls", "taker_ls_vol")):
+                raw = met[col].to_numpy(dtype=float)
+                v, _ = asof(grid, st, np.where(raw > 0, raw, np.nan), max_age=np.timedelta64(30, "m"))
+                cols[name] = np.clip(np.log(v), -3, 3)       # log ratio; outliers (e.g. 1890) clipped
         else:
             ok_m = np.zeros(T, dtype=bool)
         prem = _read(extras_dir / "premium" / f"{sym}.parquet")
@@ -121,10 +126,11 @@ def positioning_features(grid: np.ndarray, symbols: list[str], extras_dir: Path)
         else:
             ok_p = np.zeros(T, dtype=bool)
         has = ok_f | ok_m | ok_p
-        for k, name in enumerate(POSITIONING_NAMES[:-1]):
+        for k, name in enumerate(POSITIONING_NAMES[:-2]):
             if name in cols:
                 out[:, j, k] = np.clip(np.nan_to_num(cols[name]), -CLIP * 10, CLIP * 10)
-        out[:, j, -1] = has
+        out[:, j, -2] = has
+        out[:, j, -1] = ok_m
         if not has.any():
             log.info("%s: no futures positioning data", sym)
     return out

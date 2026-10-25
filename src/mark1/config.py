@@ -10,6 +10,7 @@ HOME = Path(os.environ.get("MARK1_HOME", Path.cwd()))
 DATA_DIR = HOME / "data"
 RAW_DIR = DATA_DIR / "raw"          # downloaded zip files from the Binance archive
 BARS_DIR = DATA_DIR / "bars"        # one Parquet file per symbol, 1-minute bars
+EXTRAS_DIR = DATA_DIR / "extras"    # extra market data: funding, futures metrics, premium, BVOL, context spot, FRED
 DATASET_DIR = DATA_DIR / "dataset"  # aligned feature tensors ready for training
 RUNS_DIR = HOME / "runs"            # checkpoints, metrics, backtest reports
 

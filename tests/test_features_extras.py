@@ -107,7 +107,24 @@ def test_build_with_extras_adds_named_columns(tmp_path):
     assert fs.market.shape[1] == base.market.shape[1] + len(MARKET_EXTRA_NAMES)
     assert fs.asset_names[-len(POSITIONING_NAMES):] == POSITIONING_NAMES
     has = fs.asset[WARMUP:, :, fs.asset_names.index("has_futures")]
-    assert has.all()
+    assert has.all() and fs.asset[WARMUP:, :, fs.asset_names.index("has_metrics")].all()
     assert np.isfinite(fs.asset).all() and np.isfinite(fs.market).all()
     funding = fs.asset[WARMUP:, 0, fs.asset_names.index("funding_bps")]
     assert 0 < np.abs(funding).mean() < 10                               # roughly 1 bp, in bps units
+
+
+def test_zero_open_interest_and_empty_ratios_are_treated_as_missing(tmp_path):
+    times = np.datetime64(START, "ns") + np.arange(200).astype("timedelta64[m]")
+    (tmp_path / "metrics").mkdir()
+    idx = pd.DatetimeIndex(times[::5], name="time")
+    oi = np.full(len(idx), 1e4)
+    oi[10] = 0.0                                   # a bad row like the archive's ETH zeros
+    pd.DataFrame({"open_interest": oi, "open_interest_value": 1.0, "toptrader_ls_count": 1.0,
+                  "toptrader_ls_sum": np.nan, "ls_count": 1.0, "taker_ls_vol": 1890.0}, index=idx
+                 ).to_parquet(tmp_path / "metrics" / "AUSDT.parquet")
+    pos = positioning_features(times, ["AUSDT"], tmp_path)[:, 0]
+    assert np.abs(pos[:, POSITIONING_NAMES.index("oi_chg_60")]).max() == 0      # no spike from the zero row
+    assert not pos[:, POSITIONING_NAMES.index("toptrader_ls")].any()            # empty cells -> 0
+    assert pos[:, POSITIONING_NAMES.index("taker_ls")].max() == 3.0             # outlier clipped
+    assert not pos[50:55, POSITIONING_NAMES.index("has_metrics")].any()         # the zero row counts as missing
+
