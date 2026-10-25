@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mark1"
+version = "0.1.0"
+description = "Mark I: cross-asset multi-horizon forecaster, decision engine, and minute-bar market simulator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Install torch separately for GPU builds (see README), this pin is for CPU/dev use.
+model = ["torch>=2.4"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mark1 = "mark1.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mark1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
