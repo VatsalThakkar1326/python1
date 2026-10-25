@@ -1,0 +1,485 @@
+<title>Mark I Backtest</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: instrument panel. Summary strip, equity, coin drilldown (price + forecast cone), then logs. */
+:root {
+  --bg: #F2F3F6;
+  --panel: #FFFFFF;
+  --ink: #151922;
+  --muted: #5D6575;
+  --line: #DCE0E7;
+  --accent: #A97A0E;      /* strategy gold */
+  --brand: #A51E2D;       /* Mark I crimson, wordmark and focus only */
+  --up: #12805E;
+  --down: #C2402E;
+  --soft: #EEF0F4;
+  --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1217; --panel: #171B22; --ink: #E7E9EE; --muted: #9AA2B1; --line: #2A303B;
+    --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1217; --panel: #171B22; --ink: #E7E9EE; --muted: #9AA2B1; --line: #2A303B;
+  --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.5; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 16px; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; letter-spacing: 0.02em; margin: 0; text-wrap: balance; }
+h2 { font-size: 20px; text-transform: uppercase; letter-spacing: 0.06em; }
+.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px;
+  border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+.brand { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.mark { font-family: var(--f-display); font-weight: 700; font-size: 34px; letter-spacing: 0.08em; color: var(--brand); line-height: 1; }
+.brand h1 { font-size: 26px; font-weight: 500; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 13px; }
+.meta b { color: var(--ink); font-weight: 500; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.kpi { background: var(--panel); padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
+.kpi .lbl { font-family: var(--f-display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 13px; color: var(--muted); }
+.kpi .val { font-family: var(--f-mono); font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi .cmp { font-size: 12px; color: var(--muted); }
+.good { color: var(--up); } .bad { color: var(--down); }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: grid; gap: 10px; min-width: 0; align-content: start; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
+.key { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.swatch.dash { background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 8px) !important; height: 2px; }
+.chart { width: 100%; min-width: 0; }
+.chart.tall { height: 320px; }
+.chart.short { height: 90px; }
+.note { margin: 0; font-size: 13px; color: var(--muted); max-width: 75ch; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--soft); border-radius: 999px; padding: 2px 10px; cursor: pointer;
+  font-family: var(--f-mono); font-size: 12px; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.chip .pnl { margin-left: 6px; }
+.chip[aria-pressed="true"] .pnl { color: inherit; opacity: 0.8; }
+
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 920px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.subhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-family: var(--f-display);
+  text-transform: uppercase; letter-spacing: 0.06em; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+.subhead span { font-family: var(--f-body); text-transform: none; letter-spacing: 0; color: var(--ink); font-size: 13px; }
+
+#cone { width: 100%; height: auto; display: block; }
+#cone .axis { fill: var(--muted); font-family: var(--f-mono); font-size: 13px; }
+#cone .gridline { stroke: var(--line); stroke-width: 1; }
+#cone .zero { stroke: var(--muted); stroke-width: 1; }
+#cone .cost { stroke: var(--down); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.8; }
+#cone .costlbl { fill: var(--down); font-family: var(--f-mono); font-size: 12px; }
+#cone .band90 { fill: var(--accent); opacity: 0.16; }
+#cone .band50 { fill: var(--accent); opacity: 0.32; }
+#cone .median { stroke: var(--accent); stroke-width: 2; fill: none; }
+#cone .real { stroke: var(--ink); stroke-width: 1.5; fill: none; }
+#cone .realdot { fill: var(--ink); }
+#cone .empty { fill: var(--muted); font-family: var(--f-body); font-size: 13px; }
+.cone-ctl { display: flex; align-items: center; gap: 8px; }
+.cone-ctl input { flex: 1; min-width: 0; accent-color: var(--accent); }
+.btn { border: 1px solid var(--line); background: var(--soft); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+.cone-read { font-size: 13px; color: var(--muted); margin: 0; }
+
+.tablewrap { overflow: auto; max-height: 420px; border: 1px solid var(--line); border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th { position: sticky; top: 0; background: var(--soft); font-family: var(--f-display); text-transform: uppercase; letter-spacing: 0.06em;
+  font-weight: 600; font-size: 12px; color: var(--muted); }
+td:first-child, th:first-child { text-align: left; }
+td { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; padding: 0 8px; border-radius: 999px; font-family: var(--f-display); font-size: 12px;
+  letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid currentColor; }
+.pill.enter { color: var(--up); } .pill.exit { color: var(--muted); } .pill.dip_exit { color: var(--accent); } .pill.stop { color: var(--down); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.filters select { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.hist { width: 100%; height: 70px; display: block; }
+.hist .ln { stroke: var(--accent); stroke-width: 2; fill: none; }
+.hist .zero { stroke: var(--muted); stroke-dasharray: 3 3; }
+.hist .axis { fill: var(--muted); font-family: var(--f-mono); font-size: 10px; }
+footer { color: var(--muted); font-size: 12px; display: grid; gap: 4px; max-width: 90ch; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span class="mark">MARK I</span><h1 id="title">Backtest</h1></div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+  <section class="panel" aria-labelledby="eq-h">
+    <div class="panel-head">
+      <h2 id="eq-h">Equity</h2>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background:var(--accent)"></span>Mark I, after costs</span>
+        <span class="key" style="color:var(--accent)"><span class="swatch dash"></span><span class="muted">Mark I, before costs</span></span>
+        <span class="key"><span class="swatch" style="background:var(--muted)"></span>Buy and hold, equal weight</span>
+      </div>
+    </div>
+    <div id="eq-chart" class="chart tall"></div>
+    <div class="subhead">Invested share of equity</div>
+    <div id="exp-chart" class="chart short"></div>
+    <p class="note" id="eq-note"></p>
+  </section>
+
+  <section class="panel" aria-labelledby="coin-h">
+    <div class="panel-head"><h2 id="coin-h">Coins</h2><div class="chips" id="coin-chips" role="group" aria-label="Choose a coin"></div></div>
+    <div class="grid2">
+      <div>
+        <div class="subhead">Price and trades <span id="coin-stats"></span></div>
+        <div id="px-chart" class="chart tall"></div>
+        <p class="note">Green arrows are buys, red arrows sells. The gold dot is the moment shown in the forecast cone; click the chart to move it.</p>
+      </div>
+      <div>
+        <div class="subhead">Forecast cone <span id="cone-time"></span></div>
+        <svg id="cone" viewBox="0 0 560 330" role="img" aria-label="Forecast cone"></svg>
+        <div class="cone-ctl">
+          <button class="btn" id="cone-prev" aria-label="Earlier forecast">&lsaquo;</button>
+          <input type="range" id="cone-slider" min="0" max="0" value="0" aria-label="Forecast time">
+          <button class="btn" id="cone-next" aria-label="Later forecast">&rsaquo;</button>
+        </div>
+        <p class="cone-read" id="cone-read"></p>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel" aria-labelledby="dec-h">
+      <div class="panel-head">
+        <h2 id="dec-h">Decisions</h2>
+        <div class="filters">
+          <label><input type="checkbox" id="dec-all" checked> All coins</label>
+          <select id="dec-action" aria-label="Filter by action">
+            <option value="">All actions</option><option value="enter">Enter</option><option value="exit">Exit</option>
+            <option value="dip_exit">Dip exit</option><option value="stop">Stop</option>
+          </select>
+        </div>
+      </div>
+      <div class="tablewrap"><table id="dec-table"><thead><tr><th>Time (UTC)</th><th>Coin</th><th>Action</th><th>Best move</th><th>Horizon</th><th>Near-term</th><th>Weight</th></tr></thead><tbody></tbody></table></div>
+      <p class="note" id="dec-note"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="acc-h">
+      <div class="panel-head"><h2 id="acc-h">Forecast accuracy</h2><span class="muted" id="acc-sub"></span></div>
+      <div class="tablewrap" style="max-height:none"><table id="acc-table"><thead><tr><th>Horizon</th><th>Skill</th><th>Rank IC</th><th>Direction</th><th>5%</th><th>50%</th><th>95%</th></tr></thead><tbody></tbody></table></div>
+      <p class="note">Skill: how much better the forecast ranges are than a baseline that only knows current volatility. Rank IC: correlation between predicted and actual coin ranking. Direction: how often the median forecast has the right sign. The last three columns should read near 0.05, 0.50 and 0.95 when the ranges are well calibrated.</p>
+      <div class="subhead">Validation skill during training</div>
+      <svg class="hist" id="hist" viewBox="0 0 500 70" preserveAspectRatio="none" role="img" aria-label="Validation skill by training step"></svg>
+    </section>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const D = /*__DATA__*/null;
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pct = (v, d = 2) => (v == null || !isFinite(v) ? "n/a" : (v >= 0 ? "+" : "") + (v * 100).toFixed(d) + "%");
+const pctAbs = (v, d = 2) => (v == null || !isFinite(v) ? "n/a" : (v * 100).toFixed(d) + "%");
+const money = (v) => (v == null ? "n/a" : "$" + Math.round(v).toLocaleString("en-US"));
+const num = (v, d = 2) => (v == null || !isFinite(v) ? "n/a" : v.toFixed(d));
+const hLabel = (m) => (m < 60 ? m + "m" : m < 1440 ? m / 60 + "h" : m / 1440 + "d");
+const tStr = (s) => new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ");
+const cls = (v) => (v == null ? "" : v >= 0 ? "good" : "bad");
+function rgba(hex, a) {
+  const h = hex.replace("#", "");
+  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+const M = D.metrics, S = M.strategy, F = M.no_costs, B = M.buy_and_hold;
+// Open on the coin the strategy traded most (BTC if it never traded).
+let coin = (() => {
+  const n = {};
+  for (const f of D.fills) n[f.coin] = (n[f.coin] || 0) + 1;
+  const top = Object.entries(n).sort((a, b) => b[1] - a[1])[0];
+  return top ? top[0] : D.coins.includes("BTC") ? "BTC" : D.coins[0];
+})();
+let coneIdx = 0;
+
+// ---------- header and summary
+$("title").textContent = `Backtest, ${D.split} period`;
+$("meta").innerHTML = [
+  ["Period", `${D.period[0].slice(0, 16)} to ${D.period[1].slice(0, 16)} UTC`],
+  ["Model", `${D.run.name}, ${D.run.params ? (D.run.params / 1e6).toFixed(2) + "M params" : ""}`],
+  ["Fees", `${D.costs.taker_bps} bps taker, ${D.costs.maker_bps} bps maker`],
+  ["Decides every", `${D.costs.decision_every} min`],
+].map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join("");
+
+const kpis = [
+  ["Mark I return", pct(S.total_return), `vs buy and hold ${pct(B.total_return)}`, cls(S.total_return)],
+  ["Before costs", pct(F.total_return), `costs took ${pctAbs((F.total_return ?? 0) - (S.total_return ?? 0))}`, cls(F.total_return)],
+  ["Max drawdown", pctAbs(S.max_drawdown), `buy and hold ${pctAbs(B.max_drawdown)}`, ""],
+  ["Sharpe", num(S.sharpe), `buy and hold ${num(B.sharpe)}`, cls(S.sharpe)],
+  ["Costs paid", money(S.total_costs), `fees ${money(S.fees_paid)}, slippage ${money(S.slippage_cost)}`, ""],
+  ["Fills", (S.n_trades ?? 0).toLocaleString("en-US"), `avg invested ${pctAbs(S.avg_exposure, 0)}`, ""],
+];
+$("kpis").innerHTML = kpis.map(([l, v, c, k]) =>
+  `<div class="kpi"><span class="lbl">${l}</span><span class="val ${k}">${v}</span><span class="cmp">${esc(c)}</span></div>`).join("");
+
+// ---------- charts
+const charts = [];   // {chart, series:[{s, kind, token}]}
+function baseOptions() {
+  return {
+    autoSize: true,
+    layout: { background: { type: "solid", color: css("--panel") }, textColor: css("--muted"), fontFamily: "JetBrains Mono, monospace", fontSize: 11 },
+    grid: { vertLines: { color: css("--line") }, horzLines: { color: css("--line") } },
+    rightPriceScale: { borderColor: css("--line") },
+    timeScale: { borderColor: css("--line"), timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 0 },
+    crosshair: { mode: 0 },
+  };
+}
+function styleFor(kind, token) {
+  const c = css(token);
+  if (kind === "area") return { lineColor: c, topColor: rgba(c, 0.35), bottomColor: rgba(c, 0.03) };
+  return { color: c };
+}
+function makeChart(el, extra) {
+  const chart = LightweightCharts.createChart(el, Object.assign(baseOptions(), extra || {}));
+  const rec = { chart, series: [] };
+  charts.push(rec);
+  rec.add = (kind, token, opts) => {
+    const s = kind === "area" ? chart.addAreaSeries(Object.assign(styleFor(kind, token), opts)) : chart.addLineSeries(Object.assign(styleFor(kind, token), opts));
+    rec.series.push({ s, kind, token });
+    return s;
+  };
+  return rec;
+}
+function retheme() {
+  for (const rec of charts) {
+    rec.chart.applyOptions(baseOptions());
+    for (const { s, kind, token } of rec.series) s.applyOptions(styleFor(kind, token));
+  }
+  drawPriceMarkers();
+  drawCone();
+  drawHistory();
+}
+const pctFmt = { type: "custom", minMove: 0.01, formatter: (v) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" };
+
+const E = D.equity;
+const eqRec = makeChart($("eq-chart"));
+const toPts = (vals, base) => E.t.map((t, i) => (vals[i] == null ? null : { time: t, value: (vals[i] / base - 1) * 100 })).filter(Boolean);
+const s0 = S.initial_equity || E.strategy[0], b0 = B.initial_equity || E.buy_and_hold[0];
+eqRec.add("line", "--muted", { lineWidth: 2, priceFormat: pctFmt, priceLineVisible: false, lastValueVisible: true }).setData(toPts(E.buy_and_hold, b0));
+eqRec.add("line", "--accent", { lineWidth: 1, lineStyle: 2, priceFormat: pctFmt, priceLineVisible: false, lastValueVisible: false }).setData(toPts(E.no_costs, s0));
+eqRec.add("line", "--accent", { lineWidth: 2, priceFormat: pctFmt, priceLineVisible: false }).setData(toPts(E.strategy, s0));
+eqRec.chart.timeScale().fitContent();
+
+const expRec = makeChart($("exp-chart"), { rightPriceScale: { borderColor: css("--line"), scaleMargins: { top: 0.1, bottom: 0 } }, timeScale: { visible: false, borderColor: css("--line"), minBarSpacing: 0.001, rightOffset: 0 } });
+expRec.add("area", "--accent", { lineWidth: 1, priceFormat: { type: "custom", minMove: 1, formatter: (v) => v.toFixed(0) + "%" }, priceLineVisible: false })
+  .setData(E.t.map((t, i) => (E.exposure[i] == null ? null : { time: t, value: E.exposure[i] * 100 })).filter(Boolean));
+expRec.chart.timeScale().fitContent();
+let syncing = false;
+for (const [a, b] of [[eqRec, expRec], [expRec, eqRec]]) {
+  a.chart.timeScale().subscribeVisibleTimeRangeChange((r) => {
+    if (syncing || !r) return;
+    syncing = true;
+    try { b.chart.timeScale().setVisibleRange(r); } catch (e) { /* range outside the other chart's data */ }
+    syncing = false;
+  });
+}
+$("eq-note").textContent = `Starting equity ${money(s0)}. The gap between the two gold lines is what fees, spread and market impact cost. ` +
+  `Over this period buy and hold returned ${pct(B.total_return)} with a ${pctAbs(B.max_drawdown)} worst drawdown.`;
+
+// ---------- coin chips with per-coin realised P&L
+const pnlByCoin = {};
+{
+  const pos = {}, cost = {};
+  for (const f of D.fills) {
+    pos[f.coin] = pos[f.coin] || 0; cost[f.coin] = cost[f.coin] || 0; pnlByCoin[f.coin] = pnlByCoin[f.coin] || 0;
+    if (f.side === "buy") { pos[f.coin] += f.qty; cost[f.coin] += f.notional + f.fee; }
+    else {
+      const avg = pos[f.coin] > 0 ? cost[f.coin] / pos[f.coin] : 0;
+      pnlByCoin[f.coin] += f.notional - f.fee - avg * f.qty;
+      cost[f.coin] -= avg * f.qty; pos[f.coin] -= f.qty;
+    }
+  }
+}
+function renderChips() {
+  $("coin-chips").innerHTML = D.coins.map((c) => {
+    const p = pnlByCoin[c];
+    const tag = p == null ? "" : `<span class="pnl ${cls(p)}">${p >= 0 ? "+" : "-"}$${Math.abs(Math.round(p)).toLocaleString("en-US")}</span>`;
+    return `<button class="chip" aria-pressed="${c === coin}" data-coin="${c}">${c}${tag}</button>`;
+  }).join("");
+}
+$("coin-chips").addEventListener("click", (e) => {
+  const b = e.target.closest(".chip");
+  if (!b) return;
+  coin = b.dataset.coin;
+  renderChips(); drawPrice(); drawCone(); renderDecisions();
+});
+
+// ---------- price chart with trades
+const P = D.prices;
+const pxRec = makeChart($("px-chart"));
+const pxSeries = pxRec.add("line", "--ink", { lineWidth: 1.5, priceLineVisible: false });
+const snap = (t) => P.t[0] + Math.floor((t - P.t[0]) / 900) * 900;
+function drawPrice() {
+  const vals = P[coin];
+  pxSeries.setData(P.t.map((t, i) => (vals[i] == null ? null : { time: t, value: vals[i] })).filter(Boolean));
+  const dec = vals.find((v) => v != null) < 1 ? 5 : vals.find((v) => v != null) < 100 ? 3 : 2;
+  pxSeries.applyOptions({ priceFormat: { type: "price", precision: dec, minMove: Math.pow(10, -dec) } });
+  drawPriceMarkers();
+  pxRec.chart.timeScale().fitContent();
+  const fills = D.fills.filter((f) => f.coin === coin);
+  const first = vals.find((v) => v != null), last = [...vals].reverse().find((v) => v != null);
+  $("coin-stats").textContent = `${coin} ${pct(last / first - 1)} over the period, ${fills.length} fills`;
+}
+function drawPriceMarkers() {
+  const agg = new Map();
+  for (const f of D.fills) {
+    if (f.coin !== coin) continue;
+    const key = snap(f.t) + f.side;
+    const a = agg.get(key) || { time: snap(f.t), side: f.side, notional: 0 };
+    a.notional += f.notional; agg.set(key, a);
+  }
+  const mk = [...agg.values()].map((a) => a.side === "buy"
+    ? { time: a.time, position: "belowBar", color: css("--up"), shape: "arrowUp", text: "" }
+    : { time: a.time, position: "aboveBar", color: css("--down"), shape: "arrowDown", text: "" });
+  const ct = D.cones.times[coneIdx];
+  if (ct != null) mk.push({ time: snap(ct), position: "inBar", color: css("--accent"), shape: "circle", size: 1.4 });
+  mk.sort((x, y) => x.time - y.time);
+  pxSeries.setMarkers(mk);
+}
+pxRec.chart.subscribeClick((p) => {
+  if (!p || p.time == null) return;
+  let best = 0, bd = Infinity;
+  D.cones.times.forEach((t, i) => { const d = Math.abs(t - p.time); if (d < bd) { bd = d; best = i; } });
+  setCone(best);
+});
+
+// ---------- forecast cone
+const C = D.cones;
+const roundTrip = 2 * (D.costs.taker_bps + (Array.isArray(D.costs.half_spread_bps) ? D.costs.half_spread_bps[0] : D.costs.half_spread_bps) + 2) / 100;
+function niceTicks(lo, hi, n) {
+  const span = hi - lo, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n) || 10 * mag;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+function drawCone() {
+  const svg = $("cone");
+  const W = 560, H = 330, L = 52, R = 14, T = 14, Bm = 34;
+  const data = C.coins[coin], q = data.q[coneIdx], real = data.realized[coneIdx];
+  $("cone-time").textContent = C.times[coneIdx] ? tStr(C.times[coneIdx]) + " UTC" : "";
+  if (!q) {
+    svg.innerHTML = `<text class="empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">No forecast: ${esc(coin)} was not tradable at this time</text>`;
+    $("cone-read").textContent = "";
+    return;
+  }
+  const taus = C.taus, lx = (m) => Math.log(m), x0 = lx(taus[0]), x1 = lx(taus[taus.length - 1]);
+  const X = (m) => L + (lx(m) - x0) / (x1 - x0) * (W - L - R);
+  const vals = q.flat().concat(real.filter((v) => v != null), [0, roundTrip, -roundTrip]);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = (hi - lo) * 0.08 || 0.5; lo -= pad; hi += pad;
+  const Y = (v) => T + (hi - v) / (hi - lo) * (H - T - Bm);
+  const area = (a, b) => taus.map((m, k) => `${X(m)},${Y(q[k][a])}`).join(" ") + " " + [...taus].reverse().map((m, k) => `${X(m)},${Y(q[taus.length - 1 - k][b])}`).join(" ");
+  let s = "";
+  for (const v of niceTicks(lo, hi, 6)) s += `<line class="gridline" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v > 0 ? "+" : ""}${v}%</text>`;
+  for (const m of taus) s += `<text class="axis" x="${X(m)}" y="${H - Bm + 18}" text-anchor="middle">${hLabel(m)}</text>`;
+  s += `<line class="zero" x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}"/>`;
+  s += `<line class="cost" x1="${L}" x2="${W - R}" y1="${Y(roundTrip)}" y2="${Y(roundTrip)}"/><text class="costlbl" x="${W - R - 2}" y="${Y(roundTrip) - 4}" text-anchor="end">round-trip cost +${roundTrip.toFixed(2)}%</text>`;
+  s += `<polygon class="band90" points="${area(0, 4)}"/><polygon class="band50" points="${area(1, 3)}"/>`;
+  s += `<polyline class="median" points="${taus.map((m, k) => `${X(m)},${Y(q[k][2])}`).join(" ")}"/>`;
+  const rp = taus.map((m, k) => (real[k] == null ? null : [X(m), Y(real[k])])).filter(Boolean);
+  if (rp.length) {
+    s += `<polyline class="real" points="${rp.map((p) => p.join(",")).join(" ")}"/>`;
+    s += rp.map((p) => `<circle class="realdot" cx="${p[0]}" cy="${p[1]}" r="3"/>`).join("");
+  }
+  svg.innerHTML = s;
+  const k1h = taus.indexOf(60), kd = taus.length - 1;
+  const inside = real.filter((v, k) => v != null && v >= q[k][0] && v <= q[k][4]).length, nreal = real.filter((v) => v != null).length;
+  $("cone-read").innerHTML = `${esc(coin)} at ${num(data.price[coneIdx], data.price[coneIdx] < 1 ? 5 : 2)}. ` +
+    `Median forecast ${pct(q[k1h][2] / 100)} in 1 hour and ${pct(q[kd][2] / 100)} in 1 day. ` +
+    `Shaded bands are the 50% and 90% ranges, black dots what happened (${inside} of ${nreal} inside the 90% band).`;
+}
+function setCone(i) {
+  coneIdx = Math.max(0, Math.min(C.times.length - 1, i));
+  $("cone-slider").value = coneIdx;
+  drawCone(); drawPriceMarkers();
+}
+$("cone-slider").max = C.times.length - 1;
+$("cone-slider").addEventListener("input", (e) => setCone(+e.target.value));
+$("cone-prev").addEventListener("click", () => setCone(coneIdx - 1));
+$("cone-next").addEventListener("click", () => setCone(coneIdx + 1));
+{
+  // open on the latest forecast whose full day has already played out
+  const real = C.coins[coin].realized;
+  let i = C.times.length - 1;
+  while (i > 0 && (real[i] == null || real[i][C.taus.length - 1] == null)) i--;
+  coneIdx = i;
+  $("cone-slider").value = i;
+}
+
+// ---------- decisions
+function renderDecisions() {
+  const all = $("dec-all").checked, act = $("dec-action").value;
+  const rows = D.decisions.filter((d) => (all || d.coin === coin) && (!act || d.action === act)).slice(-300).reverse();
+  $("dec-table").tBodies[0].innerHTML = rows.map((d) =>
+    `<tr><td>${esc(d.time.slice(0, 16))}</td><td>${esc(d.coin)}</td><td><span class="pill ${esc(d.action)}">${esc(d.action.replace("_", " "))}</span></td>` +
+    `<td class="${cls(d.expected_pct)}">${d.expected_pct >= 0 ? "+" : ""}${d.expected_pct.toFixed(2)}%</td><td>${hLabel(d.best_tau)}</td>` +
+    `<td class="${cls(d.worst_near_pct)}">${d.worst_near_pct >= 0 ? "+" : ""}${d.worst_near_pct.toFixed(2)}%</td>` +
+    `<td>${(d.weight_before * 100).toFixed(1)}% &rarr; ${(d.weight_after * 100).toFixed(1)}%</td></tr>`).join("") ||
+    `<tr><td colspan="7" class="muted" style="text-align:left;font-family:var(--f-body)">No decisions match these filters.</td></tr>`;
+  $("dec-note").textContent = `Showing ${rows.length} of ${D.decisions_total.toLocaleString("en-US")} entry, exit, dip-exit and stop decisions, newest first. ` +
+    `Best move is the expected return at the horizon with the best risk-adjusted edge; near-term is the worst expected move within 4 hours.`;
+}
+$("dec-all").addEventListener("change", renderDecisions);
+$("dec-action").addEventListener("change", renderDecisions);
+
+// ---------- accuracy
+const acc = D.model_eval.test;
+$("acc-sub").textContent = D.run.test_skill == null ? "" : `overall skill ${pct(D.run.test_skill)} on the test period`;
+$("acc-table").tBodies[0].innerHTML = acc.map((r) =>
+  `<tr><td>${hLabel(r.h)}</td><td class="${cls(r.skill)}">${pct(r.skill)}</td><td class="${cls(r.ic)}">${num(r.ic, 3)}</td>` +
+  `<td>${pctAbs(r.hit, 1)}</td><td>${num(r.cov05, 3)}</td><td>${num(r.cov50, 3)}</td><td>${num(r.cov95, 3)}</td></tr>`).join("") ||
+  `<tr><td colspan="7" class="muted">No test evaluation found for this run.</td></tr>`;
+function drawHistory() {
+  const h = D.model_eval.history, svg = $("hist");
+  if (!h.length) { svg.innerHTML = ""; return; }
+  const W = 500, H = 70, L = 4, R = 4, T = 6, B = 14;
+  const v = h.map((p) => p.val_skill * 100), lo = Math.min(0, ...v), hi = Math.max(0, ...v), span = hi - lo || 1;
+  const X = (i) => L + (h.length === 1 ? 0.5 : i / (h.length - 1)) * (W - L - R), Y = (y) => T + (hi - y) / span * (H - T - B);
+  svg.innerHTML = `<line class="zero" x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}"/>` +
+    `<polyline class="ln" points="${v.map((y, i) => `${X(i)},${Y(y)}`).join(" ")}"/>` +
+    `<text class="axis" x="${L}" y="${H - 2}">step ${h[0].step}</text><text class="axis" x="${W - R}" y="${H - 2}" text-anchor="end">step ${h[h.length - 1].step}, best ${D.run.best_step}</text>`;
+}
+
+// ---------- footer
+$("foot").innerHTML = [
+  `Simulated on 1-minute bars with our own exchange model: ${D.costs.taker_bps} bps taker fee, ${Array.isArray(D.costs.half_spread_bps) ? "per-coin" : D.costs.half_spread_bps + " bps"} half-spread, square-root market impact (coefficient ${D.costs.impact_coef}), at most ${Math.round(D.costs.participation_cap * 100)}% of each minute's volume, orders fill at the next minute's open.`,
+  `Forecasts and decisions at each moment use only data available at that moment. The test period was never used for training or model selection.`,
+  `Backtests are an upper bound. Exchange outages, real queue position and model drift make live results worse, so confirm on live paper trading before risking money.`,
+].map((t) => `<span>${esc(t)}</span>`).join("");
+
+// ---------- go
+renderChips(); drawPrice(); drawCone(); renderDecisions(); drawHistory();
+new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
+</script>

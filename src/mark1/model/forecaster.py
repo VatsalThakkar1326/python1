@@ -30,6 +30,26 @@ class Forecaster:
         model.load_state_dict(ckpt["model"])
         return cls(model, Normalizer.from_dict(meta["normalizer"]), meta, dev)
 
+    def predict_grid(self, fs: FeatureSet, run_dir: str | Path, start: int, end: int, every: int,
+                     taus: list[int] | np.ndarray) -> dict:
+        """Forecasts at rows start, start+every, ... < end - 1, cached on disk next to the checkpoint.
+
+        The cache key includes the checkpoint's modification time, so retraining invalidates it.
+        """
+        run_dir = Path(run_dir)
+        taus = np.asarray(taus, dtype=np.int64)
+        stamp = int((run_dir / "model.pt").stat().st_mtime)
+        key = f"fc_{start}_{end}_{every}_{'-'.join(map(str, taus))}_{stamp}.npz"
+        path = run_dir / "cache" / key
+        rows = np.arange(start, end - 1, every)
+        if path.exists():
+            z = np.load(path)
+            return {"rows": z["rows"], "quantiles": z["quantiles"], "ready": z["ready"], "taus": z["taus"]}
+        out = self.predict(fs, rows, taus)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, rows=rows, quantiles=out["quantiles"], ready=out["ready"], taus=taus)
+        return {"rows": rows, **out}
+
     @torch.no_grad()
     def predict(self, fs: FeatureSet, t: np.ndarray, taus: list[int] | np.ndarray, batch_size: int = 256) -> dict:
         """Quantiles of future LOG RETURNS for decision rows t and horizons taus.

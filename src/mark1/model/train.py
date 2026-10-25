@@ -288,3 +288,30 @@ def train(cfg: TrainConfig) -> dict:
 
 def load_meta(run_dir: Path) -> dict:
     return json.loads((run_dir / "meta.json").read_text())
+
+
+def evaluate_run(run_dir: Path, split: str = "test", device: str = "auto", eval_batches: int | None = None) -> dict:
+    """Score a saved checkpoint on one split (useful after stopping a run early)."""
+    run_dir = Path(run_dir)
+    meta = load_meta(run_dir)
+    tc = meta["train_config"]
+    dev = resolve_device(device)
+    fs = open_dataset(Path(tc["dataset_dir"]))
+    views = tuple(tuple(v) for v in tc["views"])
+    s = Split(**meta["splits"][split])
+    norm = Normalizer.from_dict(meta["normalizer"])
+    b = meta["baseline"]
+    baseline = Baseline(np.asarray(b["table"], dtype=np.float32), b["quantiles"])
+    model = MarkOne(ModelConfig.from_dict(meta["model_config"])).to(dev)
+    ckpt = torch.load(run_dir / "model.pt", map_location=dev, weights_only=True)
+    model.load_state_dict(ckpt["model"])
+    batches = WindowSampler(fs, norm, views, s).fixed_batches(eval_batches or tc["eval_batches"], tc["batch_size"], tc["report_horizons"])
+    rep = evaluate(model, batches, baseline, dev, b["quantiles"])
+    log.info("checkpoint step %d\n%s", ckpt["step"], format_report(rep, split.upper()))
+    if split == "test":
+        hist_path = run_dir / "history.json"
+        hist = json.loads(hist_path.read_text())["history"] if hist_path.exists() else []
+        best_val = min((h["val"]["loss_model"] for h in hist), default=float("nan"))
+        n_params = sum(p.numel() for p in model.parameters())
+        save_json({"best_step": ckpt["step"], "best_val_loss": best_val, "test": rep, "n_params": n_params}, run_dir / "results.json")
+    return rep

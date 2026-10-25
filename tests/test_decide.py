@@ -60,3 +60,13 @@ def test_caps_and_drawdown_brake():
     assert np.all(w <= 0.2 + 1e-12) and w.sum() <= 1.0 + 1e-12
     w2, _ = eng.decide(q, *args, equity=0.6)        # 40% drawdown -> floor multiplier
     assert np.isclose(w2.sum(), w.sum() * cfg.drawdown_floor)
+
+
+def test_gross_cap_holds_after_keeping_small_changes():
+    # Held coins slightly above their new targets are kept (small change), which used to push
+    # the total over 100%.
+    eng = DecisionEngine(DecisionConfig(max_weight=0.2, min_trade_weight=0.01))
+    q = np.repeat(curve([0.01, 0.03, 0.06, 0.1], [0.004, 0.008, 0.015, 0.03]), 6, axis=1)
+    cur = np.full(6, 0.175)          # 105% invested before the decision
+    w, _ = eng.decide(q, TAUS, LEVELS, cur, np.full(6, 0.0045), np.ones(6, bool), np.full(6, 100.0), 1.0)
+    assert w.sum() <= 1.0 + 1e-12

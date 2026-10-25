@@ -3,7 +3,10 @@
     mark1 download  --start 2021-01-01 --end 2026-10-24
     mark1 build     --start 2021-01-01
     mark1 train     --run-dir runs/v1 --steps 50000 --d-model 128
+    mark1 evaluate  --run-dir runs/v1
     mark1 backtest  --run-dir runs/v1
+    mark1 rl        --run-dir runs/v1 --stage 1
+    mark1 rl        --run-dir runs/v1 --stage 2 --init-from runs/v1/rl_stage1/policy.pt
     mark1 info
 """
 
@@ -45,10 +48,28 @@ def cmd_train(a: argparse.Namespace) -> None:
     train(TrainConfig(**overrides))
 
 
+def cmd_evaluate(a: argparse.Namespace) -> None:
+    from mark1.model.train import evaluate_run
+    evaluate_run(Path(a.run_dir), split=a.split, device=a.device, eval_batches=a.eval_batches)
+
+
 def cmd_backtest(a: argparse.Namespace) -> None:
     from mark1.backtest import run_model_backtest
     run_model_backtest(Path(a.run_dir), split=a.split, decision_every=a.decision_every,
                        taker_fee_bps=a.taker_fee_bps, maker_fee_bps=a.maker_fee_bps)
+
+
+def cmd_rl(a: argparse.Namespace) -> None:
+    from mark1.rl.env import EnvConfig
+    from mark1.rl.ppo import PPOConfig
+    from mark1.rl.train_rl import RLConfig, train_rl
+    env = EnvConfig(decision_every=a.decision_every, episode_minutes=a.episode_days * 1440)
+    ppo = PPOConfig(n_envs=a.n_envs, n_steps=a.n_steps, minibatch_size=a.minibatch_size, lr=a.lr,
+                    reward_scale=a.reward_scale, ent_coef=a.ent_coef)
+    train_rl(RLConfig(run_dir=a.run_dir, out_dir=a.out_dir, stage=a.stage, init_from=a.init_from,
+                      total_steps=a.total_steps, eval_every=a.eval_every, device=a.device, seed=a.seed,
+                      forecaster_lr_mult=a.forecaster_lr_mult, aux_coef=a.aux_coef, env=env, ppo=ppo,
+                      d_model=a.d_model, n_layers=a.n_layers))
 
 
 def cmd_info(a: argparse.Namespace) -> None:
@@ -95,6 +116,13 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--seed", type=int)
     t.set_defaults(fn=cmd_train)
 
+    ev = sub.add_parser("evaluate", help="score a saved checkpoint on the val or test period")
+    ev.add_argument("--run-dir", required=True)
+    ev.add_argument("--split", default="test", choices=["val", "test"])
+    ev.add_argument("--device", default="auto")
+    ev.add_argument("--eval-batches", dest="eval_batches", type=int, default=None)
+    ev.set_defaults(fn=cmd_evaluate)
+
     bt = sub.add_parser("backtest", help="run a trained model through the simulator")
     bt.add_argument("--run-dir", required=True)
     bt.add_argument("--split", default="test", choices=["val", "test"])
@@ -102,6 +130,29 @@ def main(argv: list[str] | None = None) -> None:
     bt.add_argument("--taker-fee-bps", type=float, default=None)
     bt.add_argument("--maker-fee-bps", type=float, default=None)
     bt.set_defaults(fn=cmd_backtest)
+
+    r = sub.add_parser("rl", help="train the RL decision layer on top of a trained Mark I run")
+    r.add_argument("--run-dir", required=True)
+    r.add_argument("--out-dir", default=None)
+    r.add_argument("--stage", type=int, default=1, choices=[1, 2], help="1: frozen Mark I, 2: fused fine-tune")
+    r.add_argument("--init-from", default=None, help="stage 2: stage-1 policy.pt to start from")
+    r.add_argument("--total-steps", type=int, default=200_000)
+    r.add_argument("--decision-every", type=int, default=15)
+    r.add_argument("--episode-days", type=int, default=3)
+    r.add_argument("--n-envs", type=int, default=8)
+    r.add_argument("--n-steps", type=int, default=128)
+    r.add_argument("--minibatch-size", type=int, default=256)
+    r.add_argument("--lr", type=float, default=3e-4)
+    r.add_argument("--reward-scale", type=float, default=100.0)
+    r.add_argument("--ent-coef", type=float, default=0.0)
+    r.add_argument("--eval-every", type=int, default=5)
+    r.add_argument("--d-model", type=int, default=64)
+    r.add_argument("--n-layers", type=int, default=2)
+    r.add_argument("--forecaster-lr-mult", type=float, default=0.1)
+    r.add_argument("--aux-coef", type=float, default=1.0)
+    r.add_argument("--device", default="auto")
+    r.add_argument("--seed", type=int, default=0)
+    r.set_defaults(fn=cmd_rl)
 
     i = sub.add_parser("info", help="show downloaded data coverage")
     i.set_defaults(fn=cmd_info)

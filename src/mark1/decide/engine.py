@@ -137,6 +137,10 @@ class DecisionEngine:
         # Small changes are not worth the fees.
         small = np.abs(target - current_weights) < c.min_trade_weight
         target = np.where(small & (target > 0), current_weights, target)
+        # Keeping old weights can push the total back over the cap; scale down if so.
+        gross = target.sum()
+        if gross > c.max_gross:
+            target *= c.max_gross / gross
 
         for i in range(N):
             if target[i] > 0 and not held[i]:
