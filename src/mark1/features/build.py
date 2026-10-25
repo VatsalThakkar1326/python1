@@ -140,7 +140,9 @@ def _xs_rank(x: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return np.where(valid, scaled, 0.0)
 
 
-def build_features(p: Panel) -> FeatureSet:
+def build_features(p: Panel, extras_dir: Path | None = None) -> FeatureSet:
+    """Core features, plus the extra dimensions (positioning, options, macro, events) when
+    `extras_dir` holds downloaded extras (see mark1.features.extras)."""
     T, N = p.n_times, p.n_assets
     a_names, m_names = asset_feature_names(), market_feature_names()
     asset = np.zeros((T, N, len(a_names)), dtype=np.float32)
@@ -164,6 +166,16 @@ def build_features(p: Panel) -> FeatureSet:
     asset[~valid] = 0.0
 
     market = _market_features(p, r1_all, ret60, ret1440, valid)
+
+    if extras_dir is not None:
+        from mark1.features.extras import (MARKET_EXTRA_NAMES, POSITIONING_NAMES, market_extra_features,
+                                           positioning_features)
+        pos = positioning_features(p.times, list(p.symbols), Path(extras_dir))
+        pos[~valid] = 0.0
+        asset = np.concatenate([asset, pos], axis=2)
+        market = np.concatenate([market, market_extra_features(p.times, Path(extras_dir))], axis=1)
+        a_names = a_names + POSITIONING_NAMES
+        m_names = m_names + MARKET_EXTRA_NAMES
 
     first_valid = np.where(valid.any(axis=0), valid.argmax(axis=0), T)
     age = np.arange(T)[:, None] - first_valid[None, :]
