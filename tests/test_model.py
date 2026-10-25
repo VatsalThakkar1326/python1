@@ -85,3 +85,50 @@ def test_model_can_learn_a_planted_signal():
         opt.step()
         losses.append(loss.item())
     assert np.mean(losses[-20:]) < 0.6 * np.mean(losses[:20])
+
+
+def test_torch_feature_store_matches_numpy_inputs():
+    from mark1.model.dataset import assemble_inputs
+    from mark1.model.feature_store import TorchFeatureStore
+    fs, splits, norm, _ = _setup()
+    store = TorchFeatureStore(fs, norm, VIEWS, torch.device("cpu"), chunk=700)
+    t = np.array([splits["train"].start, splits["train"].start + 37, splits["val"].start + 5])
+    ref = assemble_inputs(fs, norm, VIEWS, t)
+    av, mv, ready, sigma = store.inputs(torch.as_tensor(t))
+    for a, b in zip(ref["asset_views"], av):
+        np.testing.assert_allclose(a, b.numpy(), atol=5e-3)
+    for a, b in zip(ref["market_views"], mv):
+        np.testing.assert_allclose(a, b.numpy(), atol=5e-3)
+    np.testing.assert_array_equal(ref["ready"], ready.numpy())
+    np.testing.assert_allclose(ref["sigma"], sigma.numpy())
+
+
+def test_encode_exposes_pathways_and_hides_masked_coins():
+    fs, splits, norm, cfg = _setup()
+    cfg.masked_coin_token = True
+    model = MarkOne(cfg).eval()
+    b = WindowSampler(fs, norm, VIEWS, splits["train"]).sample(batch_size=3, n_tau=1)
+    av = [torch.from_numpy(x) for x in b["asset_views"]]
+    mv = [torch.from_numpy(x) for x in b["market_views"]]
+    ready = torch.from_numpy(b["ready"])
+    coin, diag = model.encode(av, mv, ready)
+    assert diag["own"].shape == coin.shape and diag["lead_lag"].shape == coin.shape and diag["market"].shape == (3, cfg.d_model)
+    mask = torch.zeros(3, 4, dtype=torch.bool)
+    mask[:, 1] = True
+    _, d1 = model.encode(av, mv, ready, coin_mask=mask)
+    av2 = [x.clone() for x in av]
+    av2[0][:, 1] += 5.0                      # change only the hidden coin's inputs
+    _, d2 = model.encode(av2, mv, ready, coin_mask=mask)
+    torch.testing.assert_close(d1["own"], d2["own"])
+
+
+def test_pathways_add_up_to_the_coin_token():
+    fs, splits, norm, cfg = _setup()
+    model = MarkOne(cfg).eval()
+    b = WindowSampler(fs, norm, VIEWS, splits["train"]).sample(batch_size=2, n_tau=1)
+    av = [torch.from_numpy(x) for x in b["asset_views"]]
+    mv = [torch.from_numpy(x) for x in b["market_views"]]
+    ready = torch.ones(2, 4, dtype=torch.bool)
+    coin, d = model.encode(av, mv, ready)
+    pre = d["own"] + d["cross"] + d["lead_lag"] + d["experts"]
+    torch.testing.assert_close(model.final_norm(pre), coin, rtol=1e-4, atol=1e-5)

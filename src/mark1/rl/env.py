@@ -44,6 +44,8 @@ class EnvConfig:
     drawdown_floor: float = 0.25      # rail: exposure multiplier at twice the brake level
     dd_penalty: float = 1.0           # reward: penalty per unit increase in drawdown
     impact_estimate_bps: float = 2.0  # used only to express forecasts relative to cost
+    dim_dropout: float = 0.0          # chance each step that a whole input dimension is hidden from the agent
+    n_dims: int = 5                   # own history, other coins, market, interactions, forecast
 
 
 class Forecasts:
@@ -72,22 +74,28 @@ class TradingEnv:
     N_COIN_FEATURES = 6
     N_PORTFOLIO_FEATURES = 4
 
-    def __init__(self, panel: Panel, forecasts: Forecasts, sigma: np.ndarray, start: int, end: int,
+    def __init__(self, panel: Panel, forecasts: Forecasts | None, sigma: np.ndarray, start: int, end: int,
                  sim_cfg: SimConfig | None = None, cfg: EnvConfig | None = None, seed: int = 0,
-                 full_period: bool = False):
+                 full_period: bool = False, ready: np.ndarray | None = None):
         """start/end bound the split; episodes are drawn inside it. `full_period=True` makes one
-        deterministic episode over the whole range (for evaluation)."""
+        deterministic episode over the whole range (for evaluation).
+
+        With precomputed `forecasts` the observation carries them (stage 1/2 policies). Without
+        them (the fused agent computes its own) pass `ready` [T, N], the feature-readiness mask."""
         self.panel, self.fc, self.sigma = panel, forecasts, sigma
         self.sim_cfg, self.cfg = sim_cfg or SimConfig(), cfg or EnvConfig()
-        if self.fc.every != self.cfg.decision_every:
+        if forecasts is None and ready is None:
+            raise ValueError("pass either precomputed forecasts or a ready mask")
+        if forecasts is not None and forecasts.every != self.cfg.decision_every:
             raise ValueError("forecast grid and decision_every differ")
+        self.ready_mask = ready
         self.sim = Simulator(panel, self.sim_cfg)
         self.rng = np.random.default_rng(seed)
         self.full_period = full_period
         self.n = panel.n_assets
         self.cost = round_trip_cost(self.sim_cfg, self.n, self.cfg.impact_estimate_bps)
-        # decision rows usable as episode starts: on the forecast grid and inside [start, end)
-        rows = forecasts.rows
+        # decision rows usable as episode starts: on the decision grid and inside [start, end)
+        rows = forecasts.rows if forecasts is not None else np.arange(start, end, self.cfg.decision_every)
         self.grid = rows[(rows >= start) & (rows < end - self.cfg.decision_every - 1)]
         if len(self.grid) < 2:
             raise ValueError("split too short for this decision grid")
@@ -145,8 +153,7 @@ class TradingEnv:
     # ------------------------------------------------------------------ actions and rails
     def target_weights(self, logits: np.ndarray) -> tuple[np.ndarray, dict]:
         """Softmax over tradable coins + cash, then the safety rails."""
-        k = self._safe_index(self.t)
-        ready = self.fc.ready[k] & self.panel.valid[self.t]
+        ready = self._ready(self.t)
         z = np.where(np.append(ready, True), logits, -np.inf)
         z = z - z.max()
         w = np.exp(z)
@@ -179,15 +186,22 @@ class TradingEnv:
         coins = np.where(ready, coins, self.sim.weights)
         return coins, rails
 
+    def _ready(self, t: int) -> np.ndarray:
+        if self.fc is not None:
+            return self.fc.ready[self._safe_index(t)] & self.panel.valid[t]
+        return np.asarray(self.ready_mask[t]) & self.panel.valid[t]
+
     def _track_entries(self, w: np.ndarray, prev: np.ndarray) -> None:
-        k = self._safe_index(self.t)
-        _, sd = self._moments(k)
         price = self.panel.close[self.t]
         new = (w > 1e-6) & (prev <= 1e-6)
         gone = w <= 1e-6
-        # risk of a new position: forecast sigma at the horizon closest to 4 hours
-        kh = int(np.argmin(np.abs(self.fc.taus - 240)))
-        self.entry_price[new], self.entry_risk[new], self.entry_t[new] = price[new], sd[kh, new], self.t
+        # risk of a new position over ~4 hours: the forecast's spread if we have one, else realised volatility
+        if self.fc is not None:
+            _, sd = self._moments(self._safe_index(self.t))
+            risk = sd[int(np.argmin(np.abs(self.fc.taus - 240)))]
+        else:
+            risk = self.sigma[self.t] * np.sqrt(240.0)
+        self.entry_price[new], self.entry_risk[new], self.entry_t[new] = price[new], risk[new], self.t
         self.entry_price[gone], self.entry_risk[gone], self.entry_t[gone] = np.nan, np.nan, -1
 
     def _moments(self, k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -200,10 +214,7 @@ class TradingEnv:
     # ------------------------------------------------------------------ observations
     def _obs(self) -> dict[str, np.ndarray]:
         t = self.t
-        k = self._safe_index(t)
-        q = self.fc.quantiles[k]                                   # [K, N, Q] log returns
-        ready = self.fc.ready[k] & self.panel.valid[t]
-        forecast = (q / self.cost[None, :, None]).astype(np.float32)
+        ready = self._ready(t)
 
         w = self.sim.weights
         price = self.panel.close[t]
@@ -225,8 +236,22 @@ class TradingEnv:
             1 - eq / self.peak,
             1 - self.k / max(1, self.n_steps),
         ], dtype=np.float32)
-        return {"t": np.array([t], dtype=np.int64), "forecast": forecast, "coins": coins,
-                "portfolio": portfolio, "mask": ready.astype(bool)}
+        obs = {"t": np.array([t], dtype=np.int64), "coins": coins, "portfolio": portfolio,
+               "mask": ready.astype(bool), "dim_mask": self._dim_mask()}
+        if self.fc is not None:
+            q = self.fc.quantiles[self._safe_index(t)]               # [K, N, Q] log returns
+            obs["forecast"] = (q / self.cost[None, :, None]).astype(np.float32)
+        return obs
+
+    def _dim_mask(self) -> np.ndarray:
+        """Which input dimensions the agent may use this step (all of them in evaluation)."""
+        p = self.cfg.dim_dropout
+        if p <= 0 or self.full_period:
+            return np.ones(self.cfg.n_dims, dtype=bool)
+        keep = self.rng.random(self.cfg.n_dims) >= p
+        if not keep.any():
+            keep[self.rng.integers(self.cfg.n_dims)] = True
+        return keep
 
     def _safe_index(self, t: int) -> int:
         # The simulator can stop a few bars past the grid at the very end of a split; use the

@@ -27,6 +27,40 @@ A crypto trading research system built from scratch:
 | 4. Everything affecting everything | Stacked cross blocks; lead-lag attention lets each coin look at every coin's state 0/5/15/30 minutes ago |
 | 5. Continuous multi-horizon prediction with confidence | Horizon decoder: ask for any tau in minutes, get monotone quantiles (5%...95%) of the volatility-scaled return |
 
+## The fused Mark I Agent (one network, one training run)
+
+`mark1 joint` trains the forecaster and the RL trading policy together, from scratch, in a
+single run. Nothing is pretrained first.
+
+| Dimension | What the policy reads directly | Auxiliary task that forces it to be learned |
+|---|---|---|
+| 1. Coin's own history | own-history pathway (before any cross-coin mixing) | predict the coin's own future volatility from that pathway alone |
+| 2. Other coins | what attention over the other coins added | rank which coins will do best over the next 1 h and 4 h |
+| 3. Market pattern | market token + regime experts' contribution | quantiles of the whole market's move at every horizon |
+| 4. Butterfly effect | what lead-lag attention added (reactions 0-30 min later) | hide one coin's inputs and recover its recent moves from the others |
+| 5. Multi-horizon forecast | quantile curves at 9 horizons, in units of trading cost | quantile loss on real future returns |
+
+The coin representation is exactly the sum of pathways 1-4 (all blocks are residual), so each
+group is a separate signal. During training the environment hides whole dimensions at random
+(15% each by default), so the policy has to use all of them; at the end each dimension's
+importance is measured by hiding it on the test period and recording the drop in Sharpe.
+Auxiliary weights start high (dense signal while the trading reward is still noise) and decay
+to 30% so that profit increasingly shapes the network.
+
+Against memorising: model size scaled with data (about 10M parameters for 5+ years), weight
+decay, dropout and input noise on supervised rows, random dimension hiding, purged splits,
+and the best checkpoint picked by validation Sharpe.
+
+```bash
+mark1 joint --preset gpu-12gb-quick --out-dir runs/joint_quick   # ~2-3 h sanity run
+mark1 joint --preset gpu-12gb --out-dir runs/joint_v1            # ~8 h overnight run
+mark1 backtest --run-dir runs/joint_v1 --decision-every 15 --rl-policy runs/joint_v1/agent.pt
+```
+
+Out of GPU memory? Lower `--minibatch-size` (128 -> 64) or `--sup-batch` (32 -> 16). The
+features sit on the GPU in float16 (about 2.7 GB for 5 years); `--store-device cpu` keeps them
+in RAM instead, which is slower but frees VRAM. Results land in `runs/joint_v1/joint_results.json`.
+
 ## Setup on your machine (NVIDIA GPU)
 
 Needs Python 3.11+ and an NVIDIA driver.
@@ -39,8 +73,9 @@ git checkout vatsal/keen-johnson-dolehf
 python -m venv .venv
 # Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 
-# 1) PyTorch with CUDA: pick the command for your CUDA version at https://pytorch.org/get-started/locally/
-#    e.g. pip install torch --index-url https://download.pytorch.org/whl/cu128
+# 1) PyTorch with CUDA. RTX 50-series (Blackwell, e.g. 5070 Ti) needs a CUDA 12.8+ build:
+#    pip install torch --index-url https://download.pytorch.org/whl/cu128
+#    (other cards: pick the command at https://pytorch.org/get-started/locally/)
 # 2) The project
 pip install -e ".[dev]"
 

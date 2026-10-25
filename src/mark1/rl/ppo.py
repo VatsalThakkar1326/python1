@@ -55,6 +55,7 @@ class PPOConfig:
     ent_coef: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5      # <= 0 disables clipping
+    weight_decay: float = 0.0       # > 0 switches the optimiser to AdamW (decoupled weight decay)
     target_kl: float | None = 0.03  # stop the update early when an epoch's mean approx KL exceeds this
     normalize_advantages: bool = True
     reward_scale: float = 1.0       # rewards are multiplied by this for training (episode stats stay raw)
@@ -200,7 +201,10 @@ class PPO:
         unique = {id(p): p for p in [*policy.parameters(), *extras]}
         self.params = [p for p in unique.values() if p.requires_grad]
         # eps=1e-5 is the usual PPO setting (Adam's default 1e-8 makes tiny-gradient dims jumpy)
-        self.optimizer = torch.optim.Adam(self.params, lr=cfg.lr, eps=1e-5)
+        if cfg.weight_decay > 0:
+            self.optimizer = torch.optim.AdamW(self.params, lr=cfg.lr, eps=1e-5, weight_decay=cfg.weight_decay)
+        else:
+            self.optimizer = torch.optim.Adam(self.params, lr=cfg.lr, eps=1e-5)
 
         self.envs = [make_env(i) for i in range(cfg.n_envs)]
         self.iteration = 0          # completed updates

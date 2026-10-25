@@ -93,7 +93,8 @@ def build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, dec
     if rl is not None:
         m0 = rl["metrics"].get("initial_equity")
         rl_eq = rl["equity"].reindex(eq.index, method="ffill").fillna(m0)
-        rl_block = {"label": f"RL agent, stage {rl.get('stage') or '?'}", "decision_every": rl.get("decision_every"),
+        label = "Fused Mark I agent" if rl.get("stage") == "fused" else f"RL agent, stage {rl.get('stage') or '?'}"
+        rl_block = {"label": label, "decision_every": rl.get("decision_every"),
                     "metrics": {m: _clean(rl["metrics"].get(m)) for m in METRIC_KEYS},
                     "equity": _r(rl_eq.to_numpy(), 2),
                     "fills": _fills(rl["fills"], coins) if len(rl["fills"]) else []}

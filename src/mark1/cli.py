@@ -5,6 +5,7 @@
     mark1 train     --run-dir runs/v1 --steps 50000 --d-model 128
     mark1 evaluate  --run-dir runs/v1
     mark1 backtest  --run-dir runs/v1
+    mark1 joint     --preset gpu-12gb --out-dir runs/joint_v1
     mark1 rl        --run-dir runs/v1 --stage 1
     mark1 rl        --run-dir runs/v1 --stage 2 --init-from runs/v1/rl_stage1/policy.pt
     mark1 info
@@ -71,6 +72,25 @@ def cmd_rl(a: argparse.Namespace) -> None:
                       total_steps=a.total_steps, eval_every=a.eval_every, device=a.device, seed=a.seed,
                       forecaster_lr_mult=a.forecaster_lr_mult, aux_coef=a.aux_coef, env=env, ppo=ppo,
                       d_model=a.d_model, n_layers=a.n_layers))
+
+
+def cmd_joint(a: argparse.Namespace) -> None:
+    from mark1.rl.joint import JointConfig, apply_preset, train_joint
+    cfg = JointConfig()
+    if a.preset:
+        apply_preset(cfg, a.preset)
+    for k in ("dataset_dir", "out_dir", "total_steps", "eval_every", "d_model", "n_layers", "n_heads", "n_experts",
+              "dropout", "d_policy", "sup_batch", "device", "store_device", "seed"):
+        v = getattr(a, k)
+        if v is not None:
+            setattr(cfg, k, v)
+    for k in ("n_envs", "n_steps", "minibatch_size", "lr", "weight_decay"):
+        v = getattr(a, k)
+        if v is not None:
+            setattr(cfg.ppo, k, v)
+    if a.dim_dropout is not None:
+        cfg.env.dim_dropout = a.dim_dropout
+    train_joint(cfg)
 
 
 def cmd_info(a: argparse.Namespace) -> None:
@@ -155,6 +175,30 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--device", default="auto")
     r.add_argument("--seed", type=int, default=0)
     r.set_defaults(fn=cmd_rl)
+
+    j = sub.add_parser("joint", help="train forecaster + RL policy together in one run (the fused Mark I Agent)")
+    j.add_argument("--preset", choices=["cpu-smoke", "gpu-12gb", "gpu-12gb-quick"], default=None)
+    j.add_argument("--dataset-dir", dest="dataset_dir")
+    j.add_argument("--out-dir", dest="out_dir")
+    j.add_argument("--total-steps", dest="total_steps", type=int)
+    j.add_argument("--eval-every", dest="eval_every", type=int)
+    j.add_argument("--d-model", dest="d_model", type=int)
+    j.add_argument("--n-layers", dest="n_layers", type=int)
+    j.add_argument("--n-heads", dest="n_heads", type=int)
+    j.add_argument("--n-experts", dest="n_experts", type=int)
+    j.add_argument("--dropout", type=float)
+    j.add_argument("--d-policy", dest="d_policy", type=int)
+    j.add_argument("--sup-batch", dest="sup_batch", type=int)
+    j.add_argument("--n-envs", dest="n_envs", type=int)
+    j.add_argument("--n-steps", dest="n_steps", type=int)
+    j.add_argument("--minibatch-size", dest="minibatch_size", type=int)
+    j.add_argument("--lr", type=float)
+    j.add_argument("--weight-decay", dest="weight_decay", type=float)
+    j.add_argument("--dim-dropout", dest="dim_dropout", type=float)
+    j.add_argument("--device")
+    j.add_argument("--store-device", dest="store_device")
+    j.add_argument("--seed", type=int)
+    j.set_defaults(fn=cmd_joint)
 
     i = sub.add_parser("info", help="show downloaded data coverage")
     i.set_defaults(fn=cmd_info)

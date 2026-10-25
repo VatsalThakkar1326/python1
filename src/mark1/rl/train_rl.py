@@ -230,6 +230,13 @@ def load_policy(policy_path: Path, setup: Setup, sim_cfg: SimConfig, env_cfg: En
 def rl_period(policy_path: Path, run_dir: Path, split: str, device: str = "auto") -> dict:
     """Trade one split with a saved policy, using the env settings it was trained with."""
     policy_path = Path(policy_path)
+    if "agent_config" in torch.load(policy_path, map_location="cpu", weights_only=False):
+        from mark1.rl.joint import load_agent              # a fused Mark I Agent from `mark1 joint`
+        agent, run = load_agent(policy_path, device)
+        out = run_policy_period(agent, run.env(split, full=True), run.device)
+        out["stage"] = "fused"
+        out["decision_every"] = run.cfg.env.decision_every
+        return out
     res_path = policy_path.parent / "results.json"
     env_cfg = EnvConfig()
     stage = None

@@ -40,6 +40,7 @@ class ModelConfig:
     tcn_dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
     lag_minutes: tuple[int, ...] = (0, 5, 15, 30)
     use_asset_embedding: bool = True
+    masked_coin_token: bool = False      # learned token for a coin whose inputs are hidden (fused agent's dimension-4 task)
     quantiles: tuple[float, ...] = tuple(config.QUANTILES)
     max_horizon: int = config.MAX_HORIZON
     # Input views: (length, stride in minutes). Must match the dataset.
@@ -157,21 +158,29 @@ class CrossBlock(nn.Module):
         self.experts = RegimeExperts(d, cfg.n_experts, cfg.dropout)
         self.drop = nn.Dropout(cfg.dropout)
 
-    def forward(self, tokens, pad_mask, lag_tokens, lag_mask):
+    def forward(self, tokens, pad_mask, lag_tokens, lag_mask, need_weights: bool = False):
         """tokens [B, 1+N, D] (market first), pad_mask [B, 1+N] True=ignore,
-        lag_tokens [B, N*K, D], lag_mask [B, N*K]."""
+        lag_tokens [B, N*K, D], lag_mask [B, N*K].
+        Returns (tokens, attention weights or None, regime gates, parts) where parts holds what
+        this block added to the coin tokens: "cross" (attention over other coins and the market),
+        "lead_lag" (lagged coin states) and "experts" (regime-gated feed-forward), each [B, N, D].
+        The block is purely residual, so a coin's token is exactly its own-history token plus
+        the sum of these parts over all blocks."""
         h = self.norm1(tokens)
-        a, attn = self.self_attn(h, h, h, key_padding_mask=pad_mask, need_weights=True)
-        tokens = tokens + self.drop(a)
+        a, attn = self.self_attn(h, h, h, key_padding_mask=pad_mask, need_weights=need_weights)
+        a = self.drop(a)
+        tokens = tokens + a
 
         q = self.norm2(tokens[:, 1:])
         kv = self.norm_kv(lag_tokens)
         ll, _ = self.lead_lag(q, kv, kv, key_padding_mask=lag_mask, need_weights=False)
-        tokens = torch.cat([tokens[:, :1], tokens[:, 1:] + self.drop(ll)], dim=1)
+        ll = self.drop(ll)
+        tokens = torch.cat([tokens[:, :1], tokens[:, 1:] + ll], dim=1)
 
         h = self.norm3(tokens)
         e, gates = self.experts(h, h[:, 0])
-        return tokens + self.drop(e), attn, gates
+        e = self.drop(e)
+        return tokens + e, attn, gates, {"cross": a[:, 1:], "lead_lag": ll, "experts": e[:, 1:]}
 
 
 class HorizonDecoder(nn.Module):
@@ -220,16 +229,33 @@ class MarkOne(nn.Module):
         self.blocks = nn.ModuleList(CrossBlock(cfg) for _ in range(cfg.n_layers))
         self.final_norm = nn.LayerNorm(d)
         self.decoder = HorizonDecoder(cfg)
+        self.mask_token = nn.Parameter(torch.zeros(d)) if cfg.masked_coin_token else None
 
-    def encode(self, asset_views, market_views, ready):
+    def encode(self, asset_views, market_views, ready, coin_mask=None, need_weights: bool = False):
         """asset_views[i]: [B, N, L_i, Fa], market_views[i]: [B, L_i, Fm], ready: [B, N] bool.
-        Returns coin tokens [B, N, D] plus diagnostics (attention, regime gates)."""
+        coin_mask: optional [B, N] bool; those coins' inputs are hidden (zeroed) and they get a
+        learned "hidden" token, so anything the model knows about them must come from other coins.
+
+        Returns coin tokens [B, N, D] and diagnostics, including each pathway separately:
+          own       coin tokens from the coin's own history only (before any cross-coin mixing)
+          cross     what attention over other coins (and the market token) added
+          lead_lag  what lead-lag attention added (coins reacting to other coins' recent states)
+          experts   what the regime-gated experts added
+          market    final market token [B, D]
+        own + cross + lead_lag + experts equals the coin token before the final LayerNorm.
+          regime_gates, attention (attention only when need_weights=True)"""
         B, N = ready.shape
+        if coin_mask is not None:
+            keep = (~coin_mask)[:, :, None, None].to(asset_views[0].dtype)
+            asset_views = [v * keep for v in asset_views]
         flat = [v.reshape(B * N, v.shape[2], v.shape[3]) for v in asset_views]
         coin, fine_seq = self.coin_encoder(flat)
         coin = coin.view(B, N, -1)
         if self.asset_embed is not None:
             coin = coin + self.asset_embed.weight[None, :N]
+        if coin_mask is not None and self.mask_token is not None:
+            coin = torch.where(coin_mask[:, :, None], self.mask_token.to(coin.dtype).expand_as(coin), coin)
+        own = coin
         market, _ = self.market_encoder(market_views)
 
         L0 = fine_seq.shape[1]
@@ -248,12 +274,15 @@ class MarkOne(nn.Module):
 
         tokens = torch.cat([market[:, None], coin], dim=1)
         attns, gates = [], []
+        parts = {"cross": 0.0, "lead_lag": 0.0, "experts": 0.0}
         for blk in self.blocks:
-            tokens, a, g = blk(tokens, pad_mask, lag_tokens, lag_mask)
+            tokens, a, g, p = blk(tokens, pad_mask, lag_tokens, lag_mask, need_weights)
             attns.append(a)
             gates.append(g)
+            for k in parts:
+                parts[k] = parts[k] + p[k]
         tokens = self.final_norm(tokens)
-        return tokens[:, 1:], {"attention": attns, "regime_gates": gates}
+        return tokens[:, 1:], {"attention": attns, "regime_gates": gates, "own": own, "market": tokens[:, 0], **parts}
 
     def forward(self, asset_views, market_views, ready, tau):
         coin, diag = self.encode(asset_views, market_views, ready)
