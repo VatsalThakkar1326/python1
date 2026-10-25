@@ -3,9 +3,8 @@
 A crypto trading research system built from scratch:
 
 1. **Data**: 1-minute bars for 20 liquid coins from the public Binance archive (free, no account).
-2. **Features**: 26 per-coin and 21 market features covering price action, volume, volatility,
-   order flow (aggressive buyers vs sellers), other coins, market mood, and clock patterns.
-   Built with no look-ahead (tested).
+2. **Features**: 36 per-coin and 43 market features over 11 input dimensions (table below).
+   Built with no look-ahead (tested by scrambling the future of every source).
 3. **Mark I model** (PyTorch): reads every coin at once and predicts, for **any horizon from
    1 minute to 1 day**, a range of likely future returns (7 quantiles) for every coin.
 4. **RL decision layer** (our own PPO): learns portfolio weights from Mark I's forecast curves
@@ -16,6 +15,28 @@ A crypto trading research system built from scratch:
 6. **Simulator**: our own minute-bar exchange simulator with fees, spread, slippage, market
    impact, latency, partial fills, limit and stop orders.
 7. **Dashboard**: every backtest writes an interactive `report.html`.
+
+## Input dimensions
+
+| # | Dimension | Data | Status |
+|---|---|---|---|
+| 1 | Price action | returns at 6 horizons, distance from highs/lows, VWAP distance | built |
+| 2 | Volume | quote volume and trade-count surprises | built |
+| 3 | Volatility | four realised-volatility measures | built |
+| 4 | Order flow | aggressive buyer vs seller share (from trades) | built (full order book needs live recording) |
+| 5 | Other coins | cross-sectional ranks, plus attention across coins in the model | built |
+| 6 | Market mood | market return, breadth, dispersion, correlation, volume, flow | built |
+| 7 | Macro | gold (PAXG) and EUR/USD minute returns, US 10-year yield, VIX, dollar index | built (`download-extras`) |
+| 8 | Clock | time of day, day of week, 8-hour funding cycle | built |
+| 9 | Scheduled events | hours to/since Fed decisions and US CPI releases, event window | built (verified calendar 2021-2026) |
+| 10 | News / sentiment | needs a news API | later |
+| 11 | Options market | Binance BTC and ETH implied-volatility indices (from 2023-06) | built (`download-extras`) |
+| 12 | Positioning | funding rate, open interest change, long/short ratios, futures premium | built (`download-extras`) |
+| 13 | Fundamentals | not meaningful for these coins | n/a |
+
+Timing rules for the extras: snapshots count from their own timestamp, FRED daily values are
+used two days after their observation date, scheduled events are public in advance (so "hours
+to next" is fair), and missing sources become 0 with a `has_*` flag.
 
 ## How the model maps to the design
 
@@ -58,8 +79,9 @@ mark1 backtest --run-dir runs/joint_v1 --decision-every 15 --rl-policy runs/join
 ```
 
 Out of GPU memory? Lower `--minibatch-size` (128 -> 64) or `--sup-batch` (32 -> 16). The
-features sit on the GPU in float16 (about 2.7 GB for 5 years); `--store-device cpu` keeps them
-in RAM instead, which is slower but frees VRAM. Results land in `runs/joint_v1/joint_results.json`.
+features sit on the GPU in float16 (about 4.5 GB for 5+ years with the extra dimensions; they
+move to RAM automatically if they would take more than 45% of free VRAM); `--store-device cpu`
+forces RAM, which is slower but frees VRAM. Results land in `runs/joint_v1/joint_results.json`.
 
 ## Setup on your machine (NVIDIA GPU)
 
@@ -88,7 +110,10 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 # 1) Download 1-minute bars (20 coins, 2021 to yesterday: ~3 GB, ~15-30 min)
 mark1 download --start 2021-01-01
 
-# 2) Build features (~2.4M minutes x 20 coins; needs ~16 GB RAM, writes ~6 GB to data/dataset)
+# 1b) Extra dimensions: positioning, options vol, macro (~3 GB, ~30-35 min)
+mark1 download-extras --start 2021-01-01
+
+# 2) Build features (~3M minutes x 20 coins; uses extras automatically; ~16-20 GB RAM, ~9 GB on disk)
 mark1 build --start 2021-01-01
 
 # 3) Train (uses the GPU automatically). Start medium, then scale up.
