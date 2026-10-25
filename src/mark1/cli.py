@@ -56,7 +56,8 @@ def cmd_evaluate(a: argparse.Namespace) -> None:
 def cmd_backtest(a: argparse.Namespace) -> None:
     from mark1.backtest import run_model_backtest
     run_model_backtest(Path(a.run_dir), split=a.split, decision_every=a.decision_every,
-                       taker_fee_bps=a.taker_fee_bps, maker_fee_bps=a.maker_fee_bps)
+                       taker_fee_bps=a.taker_fee_bps, maker_fee_bps=a.maker_fee_bps,
+                       rl_policy=Path(a.rl_policy) if a.rl_policy else None)
 
 
 def cmd_rl(a: argparse.Namespace) -> None:
@@ -129,6 +130,7 @@ def main(argv: list[str] | None = None) -> None:
     bt.add_argument("--decision-every", type=int, default=5)
     bt.add_argument("--taker-fee-bps", type=float, default=None)
     bt.add_argument("--maker-fee-bps", type=float, default=None)
+    bt.add_argument("--rl-policy", default=None, help="also trade the period with this RL policy.pt and show it in the report")
     bt.set_defaults(fn=cmd_backtest)
 
     r = sub.add_parser("rl", help="train the RL decision layer on top of a trained Mark I run")

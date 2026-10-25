@@ -93,6 +93,7 @@ def run_model_backtest(
     decision_cfg: DecisionConfig | None = None,
     sim_cfg: SimConfig | None = None,
     report: bool = True,
+    rl_policy: Path | None = None,
 ) -> BacktestOutput:
     run_dir = Path(run_dir)
     meta = load_meta(run_dir)
@@ -127,6 +128,12 @@ def run_model_backtest(
     print(strat.summary("Mark I strategy (real costs)"))
     print(free.summary("Mark I strategy (no costs)"))
     print(bh.summary("Buy and hold, equal weight"))
+    rl = None
+    if rl_policy is not None:
+        from mark1.rl.train_rl import rl_period
+        from mark1.sim import format_metrics
+        rl = rl_period(Path(rl_policy), run_dir, split)
+        print(format_metrics(rl["metrics"], f"RL agent (stage {rl['stage']})"))
 
     out_dir = run_dir / f"backtest_{split}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +141,8 @@ def run_model_backtest(
                "sim_config": _jsonable(asdict(sim_cfg)), "decision_config": asdict(decision_cfg),
                "decision_every": decision_every, "split": split,
                "period": [str(pd.Timestamp(fs.times[start])), str(pd.Timestamp(fs.times[end - 1]))]}
+    if rl is not None:
+        metrics["rl"] = rl["metrics"]
     (out_dir / "metrics.json").write_text(json.dumps(_jsonable(metrics), indent=2))
     strat.fills.to_parquet(out_dir / "fills.parquet")
     pd.DataFrame({"strategy": strat.equity, "strategy_no_costs": free.equity, "buy_and_hold": bh.equity}).to_parquet(out_dir / "equity.parquet")
@@ -142,7 +151,7 @@ def run_model_backtest(
     report_path = None
     if report:
         from mark1.report import build_report_data, write_report
-        data = build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, decisions, forecaster, metrics)
+        data = build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, decisions, forecaster, metrics, rl=rl)
         report_path = write_report(data, out_dir / "report.html")
         log.info("report written to %s", report_path)
     return BacktestOutput(out_dir, metrics, report_path)

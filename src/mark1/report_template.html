@@ -15,6 +15,7 @@
   --brand: #A51E2D;       /* Mark I crimson, wordmark and focus only */
   --up: #12805E;
   --down: #C2402E;
+  --rl: #2F6DB5;         /* RL agent */
   --soft: #EEF0F4;
   --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
   --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
@@ -23,13 +24,13 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0F1217; --panel: #171B22; --ink: #E7E9EE; --muted: #9AA2B1; --line: #2A303B;
-    --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B;
+    --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B; --rl: #6EA6E6;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0F1217; --panel: #171B22; --ink: #E7E9EE; --muted: #9AA2B1; --line: #2A303B;
-  --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B;
+  --accent: #E3B24A; --brand: #E25563; --up: #3CC79B; --down: #F2735E; --soft: #1D222B; --rl: #6EA6E6;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -71,6 +72,12 @@ button, select, input { font: inherit; color: inherit; }
 .chart.short { height: 90px; }
 .note { margin: 0; font-size: 13px; color: var(--muted); max-width: 75ch; }
 
+.viewbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 4px 14px; cursor: pointer; font-family: var(--f-display);
+  text-transform: uppercase; letter-spacing: 0.06em; font-size: 14px; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { border: 1px solid var(--line); background: var(--soft); border-radius: 999px; padding: 2px 10px; cursor: pointer;
   font-family: var(--f-mono); font-size: 12px; }
@@ -127,14 +134,24 @@ footer { color: var(--muted); font-size: 12px; display: grid; gap: 4px; max-widt
     <div class="meta" id="meta"></div>
   </header>
 
+  <div class="viewbar" id="viewbar" hidden>
+    <span class="muted">Decision layer</span>
+    <div class="seg" role="group" aria-label="Decision layer">
+      <button data-v="rules" aria-pressed="true">Rules engine</button>
+      <button data-v="rl" aria-pressed="false">RL agent</button>
+    </div>
+    <span class="muted" id="view-note"></span>
+  </div>
+
   <section class="kpis" id="kpis" aria-label="Summary"></section>
 
   <section class="panel" aria-labelledby="eq-h">
     <div class="panel-head">
       <h2 id="eq-h">Equity</h2>
       <div class="legend">
-        <span class="key"><span class="swatch" style="background:var(--accent)"></span>Mark I, after costs</span>
-        <span class="key" style="color:var(--accent)"><span class="swatch dash"></span><span class="muted">Mark I, before costs</span></span>
+        <span class="key"><span class="swatch" style="background:var(--accent)"></span>Rules engine, after costs</span>
+        <span class="key" style="color:var(--accent)"><span class="swatch dash"></span><span class="muted">Rules engine, before costs</span></span>
+        <span class="key" id="rl-key" hidden><span class="swatch" style="background:var(--rl)"></span><span id="rl-key-label">RL agent</span></span>
         <span class="key"><span class="swatch" style="background:var(--muted)"></span>Buy and hold, equal weight</span>
       </div>
     </div>
@@ -212,7 +229,9 @@ function rgba(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-const M = D.metrics, S = M.strategy, F = M.no_costs, B = M.buy_and_hold;
+const M = D.metrics, S = M.strategy, F = M.no_costs, B = M.buy_and_hold, R = D.rl;
+let view = "rules";
+const curFills = () => (view === "rl" && R ? R.fills : D.fills);
 // Open on the coin the strategy traded most (BTC if it never traded).
 let coin = (() => {
   const n = {};
@@ -231,16 +250,28 @@ $("meta").innerHTML = [
   ["Decides every", `${D.costs.decision_every} min`],
 ].map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join("");
 
-const kpis = [
-  ["Mark I return", pct(S.total_return), `vs buy and hold ${pct(B.total_return)}`, cls(S.total_return)],
-  ["Before costs", pct(F.total_return), `costs took ${pctAbs((F.total_return ?? 0) - (S.total_return ?? 0))}`, cls(F.total_return)],
-  ["Max drawdown", pctAbs(S.max_drawdown), `buy and hold ${pctAbs(B.max_drawdown)}`, ""],
-  ["Sharpe", num(S.sharpe), `buy and hold ${num(B.sharpe)}`, cls(S.sharpe)],
-  ["Costs paid", money(S.total_costs), `fees ${money(S.fees_paid)}, slippage ${money(S.slippage_cost)}`, ""],
-  ["Fills", (S.n_trades ?? 0).toLocaleString("en-US"), `avg invested ${pctAbs(S.avg_exposure, 0)}`, ""],
-];
-$("kpis").innerHTML = kpis.map(([l, v, c, k]) =>
-  `<div class="kpi"><span class="lbl">${l}</span><span class="val ${k}">${v}</span><span class="cmp">${esc(c)}</span></div>`).join("");
+function renderKpis() {
+  const rl = view === "rl" && R;
+  const X = rl ? R.metrics : S;
+  const kpis = rl ? [
+    ["RL agent return", pct(X.total_return), `vs buy and hold ${pct(B.total_return)}`, cls(X.total_return)],
+    ["Rules engine", pct(S.total_return), `RL ${(X.total_return ?? 0) >= (S.total_return ?? 0) ? "ahead" : "behind"} by ${pctAbs(Math.abs((X.total_return ?? 0) - (S.total_return ?? 0)))}`, cls(S.total_return)],
+    ["Max drawdown", pctAbs(X.max_drawdown), `buy and hold ${pctAbs(B.max_drawdown)}`, ""],
+    ["Sharpe", num(X.sharpe), `rules ${num(S.sharpe)}, buy and hold ${num(B.sharpe)}`, cls(X.sharpe)],
+    ["Costs paid", money(X.total_costs), `fees ${money(X.fees_paid)}, slippage ${money(X.slippage_cost)}`, ""],
+    ["Fills", (X.n_trades ?? 0).toLocaleString("en-US"), `avg invested ${pctAbs(X.avg_exposure, 0)}`, ""],
+  ] : [
+    ["Rules engine return", pct(S.total_return), `vs buy and hold ${pct(B.total_return)}`, cls(S.total_return)],
+    ["Before costs", pct(F.total_return), `costs took ${pctAbs((F.total_return ?? 0) - (S.total_return ?? 0))}`, cls(F.total_return)],
+    ["Max drawdown", pctAbs(S.max_drawdown), `buy and hold ${pctAbs(B.max_drawdown)}`, ""],
+    ["Sharpe", num(S.sharpe), `buy and hold ${num(B.sharpe)}`, cls(S.sharpe)],
+    ["Costs paid", money(S.total_costs), `fees ${money(S.fees_paid)}, slippage ${money(S.slippage_cost)}`, ""],
+    ["Fills", (S.n_trades ?? 0).toLocaleString("en-US"), `avg invested ${pctAbs(S.avg_exposure, 0)}`, ""],
+  ];
+  $("kpis").innerHTML = kpis.map(([l, v, c, k]) =>
+    `<div class="kpi"><span class="lbl">${l}</span><span class="val ${k}">${v}</span><span class="cmp">${esc(c)}</span></div>`).join("");
+  $("view-note").textContent = rl ? `${R.label}, rebalances every ${R.decision_every} min within the safety rails` : "forecast curves through cost-aware rules";
+}
 
 // ---------- charts
 const charts = [];   // {chart, series:[{s, kind, token}]}
@@ -288,6 +319,12 @@ const s0 = S.initial_equity || E.strategy[0], b0 = B.initial_equity || E.buy_and
 eqRec.add("line", "--muted", { lineWidth: 2, priceFormat: pctFmt, priceLineVisible: false, lastValueVisible: true }).setData(toPts(E.buy_and_hold, b0));
 eqRec.add("line", "--accent", { lineWidth: 1, lineStyle: 2, priceFormat: pctFmt, priceLineVisible: false, lastValueVisible: false }).setData(toPts(E.no_costs, s0));
 eqRec.add("line", "--accent", { lineWidth: 2, priceFormat: pctFmt, priceLineVisible: false }).setData(toPts(E.strategy, s0));
+if (R) {
+  eqRec.add("line", "--rl", { lineWidth: 2, priceFormat: pctFmt, priceLineVisible: false }).setData(toPts(R.equity, R.metrics.initial_equity || s0));
+  $("rl-key").hidden = false;
+  $("rl-key-label").textContent = R.label;
+  $("viewbar").hidden = false;
+}
 eqRec.chart.timeScale().fitContent();
 
 const expRec = makeChart($("exp-chart"), { rightPriceScale: { borderColor: css("--line"), scaleMargins: { top: 0.1, bottom: 0 } }, timeScale: { visible: false, borderColor: css("--line"), minBarSpacing: 0.001, rightOffset: 0 } });
@@ -307,22 +344,23 @@ $("eq-note").textContent = `Starting equity ${money(s0)}. The gap between the tw
   `Over this period buy and hold returned ${pct(B.total_return)} with a ${pctAbs(B.max_drawdown)} worst drawdown.`;
 
 // ---------- coin chips with per-coin realised P&L
-const pnlByCoin = {};
-{
-  const pos = {}, cost = {};
-  for (const f of D.fills) {
-    pos[f.coin] = pos[f.coin] || 0; cost[f.coin] = cost[f.coin] || 0; pnlByCoin[f.coin] = pnlByCoin[f.coin] || 0;
+function pnlByCoin() {
+  const pos = {}, cost = {}, pnl = {};
+  for (const f of curFills()) {
+    pos[f.coin] = pos[f.coin] || 0; cost[f.coin] = cost[f.coin] || 0; pnl[f.coin] = pnl[f.coin] || 0;
     if (f.side === "buy") { pos[f.coin] += f.qty; cost[f.coin] += f.notional + f.fee; }
     else {
       const avg = pos[f.coin] > 0 ? cost[f.coin] / pos[f.coin] : 0;
-      pnlByCoin[f.coin] += f.notional - f.fee - avg * f.qty;
+      pnl[f.coin] += f.notional - f.fee - avg * f.qty;
       cost[f.coin] -= avg * f.qty; pos[f.coin] -= f.qty;
     }
   }
+  return pnl;
 }
 function renderChips() {
+  const pnl = pnlByCoin();
   $("coin-chips").innerHTML = D.coins.map((c) => {
-    const p = pnlByCoin[c];
+    const p = pnl[c];
     const tag = p == null ? "" : `<span class="pnl ${cls(p)}">${p >= 0 ? "+" : "-"}$${Math.abs(Math.round(p)).toLocaleString("en-US")}</span>`;
     return `<button class="chip" aria-pressed="${c === coin}" data-coin="${c}">${c}${tag}</button>`;
   }).join("");
@@ -346,13 +384,13 @@ function drawPrice() {
   pxSeries.applyOptions({ priceFormat: { type: "price", precision: dec, minMove: Math.pow(10, -dec) } });
   drawPriceMarkers();
   pxRec.chart.timeScale().fitContent();
-  const fills = D.fills.filter((f) => f.coin === coin);
+  const fills = curFills().filter((f) => f.coin === coin);
   const first = vals.find((v) => v != null), last = [...vals].reverse().find((v) => v != null);
   $("coin-stats").textContent = `${coin} ${pct(last / first - 1)} over the period, ${fills.length} fills`;
 }
 function drawPriceMarkers() {
   const agg = new Map();
-  for (const f of D.fills) {
+  for (const f of curFills()) {
     if (f.coin !== coin) continue;
     const key = snap(f.t) + f.side;
     const a = agg.get(key) || { time: snap(f.t), side: f.side, notional: 0 };
@@ -439,6 +477,12 @@ $("cone-next").addEventListener("click", () => setCone(coneIdx + 1));
 
 // ---------- decisions
 function renderDecisions() {
+  if (view === "rl" && R) {
+    $("dec-table").tBodies[0].innerHTML = `<tr><td colspan="7" class="muted" style="text-align:left;font-family:var(--f-body);white-space:normal">` +
+      `The RL agent does not make discrete enter or exit calls: every ${R.decision_every} minutes it sets a target weight for each coin and cash. Its ${R.fills.length.toLocaleString("en-US")} fills are marked on the price chart.</td></tr>`;
+    $("dec-note").textContent = "Switch to the rules engine to see its decision log.";
+    return;
+  }
   const all = $("dec-all").checked, act = $("dec-action").value;
   const rows = D.decisions.filter((d) => (all || d.coin === coin) && (!act || d.action === act)).slice(-300).reverse();
   $("dec-table").tBodies[0].innerHTML = rows.map((d) =>
@@ -478,8 +522,17 @@ $("foot").innerHTML = [
   `Backtests are an upper bound. Exchange outages, real queue position and model drift make live results worse, so confirm on live paper trading before risking money.`,
 ].map((t) => `<span>${esc(t)}</span>`).join("");
 
+// ---------- view toggle
+document.querySelector(".seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !R) return;
+  view = b.dataset.v;
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  renderKpis(); renderChips(); drawPrice(); renderDecisions();
+});
+
 // ---------- go
-renderChips(); drawPrice(); drawCone(); renderDecisions(); drawHistory();
+renderKpis(); renderChips(); drawPrice(); drawCone(); renderDecisions(); drawHistory();
 new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
 </script>

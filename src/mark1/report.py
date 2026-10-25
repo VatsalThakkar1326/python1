@@ -29,8 +29,19 @@ def _r(a: np.ndarray, nd: int = 4) -> list:
     return [None if not np.isfinite(v) else round(float(v), nd) for v in np.asarray(a, dtype=float)]
 
 
+def _fills(df: pd.DataFrame, coins: list[str]) -> list[dict]:
+    out = []
+    for rec in df.itertuples():
+        out.append({
+            "t": int(pd.Timestamp(rec.time).value // 1_000_000_000),
+            "coin": coins[int(rec.asset)], "side": rec.side, "price": float(rec.price),
+            "qty": float(rec.qty), "notional": round(float(rec.qty * rec.price), 2), "fee": round(float(rec.fee), 2),
+        })
+    return out
+
+
 def build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, decisions, forecaster, metrics,
-                      price_step: int = 15, n_cones: int = 160) -> dict:
+                      price_step: int = 15, n_cones: int = 160, rl: dict | None = None) -> dict:
     coins = [s.replace("USDT", "") for s in fs.symbols]
     results_path = Path(run_dir) / "results.json"
     history_path = Path(run_dir) / "history.json"
@@ -46,15 +57,7 @@ def build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, dec
     rows = np.arange(start, end, price_step)
     prices = {c: _r(panel.close[rows, j], 8) for j, c in enumerate(coins)}
 
-    fills = []
-    if len(strat.fills):
-        f = strat.fills
-        for rec in f.itertuples():
-            fills.append({
-                "t": int(pd.Timestamp(rec.time).value // 1_000_000_000),
-                "coin": coins[int(rec.asset)], "side": rec.side, "price": float(rec.price),
-                "qty": float(rec.qty), "notional": round(float(rec.qty * rec.price), 2), "fee": round(float(rec.fee), 2),
-            })
+    fills = _fills(strat.fills, coins) if len(strat.fills) else []
 
     # Forecast cones at evenly spaced times, with what actually happened afterwards.
     taus = np.array([5, 15, 30, 60, 120, 240, 480, 720, 1440])
@@ -86,8 +89,18 @@ def build_report_data(run_dir, meta, fs, panel, start, end, strat, free, bh, dec
                           "cov95": cov[-1] if cov else None})
     hist = [{"step": h["step"], "train": h["train_loss"], "val_skill": h["val"]["skill"]} for h in history]
 
+    rl_block = None
+    if rl is not None:
+        m0 = rl["metrics"].get("initial_equity")
+        rl_eq = rl["equity"].reindex(eq.index, method="ffill").fillna(m0)
+        rl_block = {"label": f"RL agent, stage {rl.get('stage') or '?'}", "decision_every": rl.get("decision_every"),
+                    "metrics": {m: _clean(rl["metrics"].get(m)) for m in METRIC_KEYS},
+                    "equity": _r(rl_eq.to_numpy(), 2),
+                    "fills": _fills(rl["fills"], coins) if len(rl["fills"]) else []}
+
     sim = metrics["sim_config"]
     return {
+        "rl": rl_block,
         "run": {"name": Path(run_dir).name, "params": results.get("n_params"), "best_step": results.get("best_step"),
                 "test_skill": _clean(test.get("skill")), "train_period": [meta["splits"]["train"]["start"], meta["splits"]["train"]["end"]],
                 "d_model": meta["model_config"]["d_model"], "layers": meta["model_config"]["n_layers"]},

@@ -69,8 +69,15 @@ mark1 backtest --run-dir runs/v1 --decision-every 15
 mark1 rl --run-dir runs/v1 --stage 1 --total-steps 2000000 --n-envs 16 --n-steps 256 --d-model 128
 
 # 7) RL stage 2: fuse forecaster and policy, fine-tune together (quantile loss keeps the forecaster honest)
-mark1 rl --run-dir runs/v1 --stage 2 --init-from runs/v1/rl_stage1/policy.pt --total-steps 500000
+mark1 rl --run-dir runs/v1 --stage 2 --init-from runs/v1/rl_stage1/policy.pt --total-steps 500000 \
+  --lr 1e-4 --forecaster-lr-mult 0.05
+
+# 8) Put the RL agent on the dashboard next to the rules engine and buy and hold
+mark1 backtest --run-dir runs/v1 --decision-every 15 --rl-policy runs/v1/rl_stage2/policy.pt
 ```
+
+Stage 2 moves the policy fast because every forecast feature shifts when Mark I updates, so it
+uses a lower learning rate than stage 1 (the first CPU smoke run hit PPO's KL early stop at 3e-4).
 
 RL results land in `runs/v1/rl_stage1/results.json`: the policy's test-period metrics next to the
 rule engine and buy-and-hold on the same period and costs.

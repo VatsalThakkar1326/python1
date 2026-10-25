@@ -170,13 +170,18 @@ def train_rl(cfg: RLConfig) -> dict:
 
     best = {"sharpe": -np.inf, "iteration": 0}
     evals = []
+    last_it = [0]
 
-    def callback(it: int, stats: dict):
-        if it % cfg.eval_every != 0:
-            return None
+    def callback(it: int, stats: dict, final: bool = False):
+        if not final:
+            last_it[0] = it
+            if it % cfg.eval_every != 0:
+                return None
+        elif it % cfg.eval_every == 0:
+            return None                                # the last iteration was already evaluated
         res = run_policy_period(policy, val_env, device)
         m = res["metrics"]
-        log.info("iter %d  VAL rl %s", it, _brief(m))
+        log.info("iter %d%s  VAL rl %s", it, " (final)" if final else "", _brief(m))
         evals.append({"iteration": it, "val": m, "train": {k: v for k, v in stats.items() if isinstance(v, (int, float))}})
         if np.isfinite(m["sharpe"]) and m["sharpe"] > best["sharpe"]:
             best.update(sharpe=m["sharpe"], iteration=it)
@@ -185,7 +190,7 @@ def train_rl(cfg: RLConfig) -> dict:
         return None
 
     ppo.learn(cfg.total_steps, callback=callback)
-    callback(cfg.eval_every * 10**9, {})  # final evaluation (iteration number only used as a label)
+    callback(last_it[0], {}, final=True)
 
     # Score the best policy on the untouched test period.
     state = torch.load(out_dir / "policy.pt", map_location=device, weights_only=True)
@@ -205,3 +210,39 @@ def train_rl(cfg: RLConfig) -> dict:
     rl_test["equity"].to_frame("rl").to_parquet(out_dir / "test_equity.parquet")
     rl_test["fills"].to_parquet(out_dir / "test_fills.parquet")
     return summary
+
+
+def load_policy(policy_path: Path, setup: Setup, sim_cfg: SimConfig, env_cfg: EnvConfig, device: torch.device) -> AllocationPolicy:
+    """Rebuild a saved policy. Stage-2 checkpoints also carry the fine-tuned Mark I weights."""
+    state = torch.load(policy_path, map_location=device, weights_only=True)
+    pcfg = PolicyConfig(**state["policy_config"])
+    fused = None
+    if any(k.startswith("fused.") for k in state["policy"]):
+        norm = Normalizer.from_dict(setup.meta["normalizer"])
+        rt = round_trip_cost(sim_cfg, setup.panel.n_assets, env_cfg.impact_estimate_bps)
+        fused = FusedForecaster(setup.forecaster.model, setup.fs, norm, setup.meta["model_config"]["views"],
+                                np.asarray(DECISION_TAUS), rt, label_end=setup.splits["train"][1])
+    policy = AllocationPolicy(pcfg, fused).to(device)
+    policy.load_state_dict(state["policy"])
+    return policy.eval()
+
+
+def rl_period(policy_path: Path, run_dir: Path, split: str, device: str = "auto") -> dict:
+    """Trade one split with a saved policy, using the env settings it was trained with."""
+    policy_path = Path(policy_path)
+    res_path = policy_path.parent / "results.json"
+    env_cfg = EnvConfig()
+    stage = None
+    if res_path.exists():
+        saved = json.loads(res_path.read_text())
+        stage = saved.get("stage")
+        env_cfg = EnvConfig(**{k: v for k, v in saved["config"]["env"].items() if k in EnvConfig.__dataclass_fields__})
+    dev = resolve_device(device)
+    setup = Setup(Path(run_dir), env_cfg.decision_every, str(dev))
+    sim_cfg = SimConfig()
+    policy = load_policy(policy_path, setup, sim_cfg, env_cfg, dev)
+    out = run_policy_period(policy, setup.env(split, sim_cfg, env_cfg, full=True), dev)
+    out["stage"] = stage
+    out["decision_every"] = env_cfg.decision_every
+    return out
+
