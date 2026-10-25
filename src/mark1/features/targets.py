@@ -18,8 +18,8 @@ TARGET_CLIP = 20.0
 
 def invalid_cumsum(valid: np.ndarray) -> np.ndarray:
     """Running count of invalid bars, used to check a whole [t, t + tau] span in O(1)."""
-    c = np.zeros((valid.shape[0] + 1,) + valid.shape[1:], dtype=np.int64)
-    c[1:] = np.cumsum(~valid, axis=0)
+    c = np.zeros((valid.shape[0] + 1,) + valid.shape[1:], dtype=np.int32)
+    c[1:] = np.cumsum(~valid, axis=0, dtype=np.int32)
     return c
 
 
