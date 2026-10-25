@@ -145,7 +145,14 @@ def build_features(p: Panel, extras_dir: Path | None = None) -> FeatureSet:
     `extras_dir` holds downloaded extras (see mark1.features.extras)."""
     T, N = p.n_times, p.n_assets
     a_names, m_names = asset_feature_names(), market_feature_names()
-    asset = np.zeros((T, N, len(a_names)), dtype=np.float32)
+    n_core = len(a_names)
+    n_extra = 0
+    if extras_dir is not None:
+        from mark1.features.extras import POSITIONING_NAMES
+        n_extra = len(POSITIONING_NAMES)
+    # One allocation for core + extra columns: on 5+ years of data a concatenate would briefly
+    # hold two copies of a ~9 GB array.
+    asset = np.zeros((T, N, n_core + n_extra), dtype=np.float32)
     log_close = np.zeros((T, N), dtype=np.float64)
     sigma = np.zeros((T, N), dtype=np.float32)
     r1_all = np.zeros((T, N), dtype=np.float64)
@@ -163,19 +170,16 @@ def build_features(p: Panel, extras_dir: Path | None = None) -> FeatureSet:
     valid = p.valid
     asset[:, :, n_local] = _xs_rank(ret60, valid)
     asset[:, :, n_local + 1] = _xs_rank(ret1440, valid)
-    asset[~valid] = 0.0
 
     market = _market_features(p, r1_all, ret60, ret1440, valid)
 
     if extras_dir is not None:
-        from mark1.features.extras import (MARKET_EXTRA_NAMES, POSITIONING_NAMES, market_extra_features,
-                                           positioning_features)
-        pos = positioning_features(p.times, list(p.symbols), Path(extras_dir))
-        pos[~valid] = 0.0
-        asset = np.concatenate([asset, pos], axis=2)
+        from mark1.features.extras import MARKET_EXTRA_NAMES, market_extra_features, positioning_features
+        asset[:, :, n_core:] = positioning_features(p.times, list(p.symbols), Path(extras_dir))
         market = np.concatenate([market, market_extra_features(p.times, Path(extras_dir))], axis=1)
         a_names = a_names + POSITIONING_NAMES
         m_names = m_names + MARKET_EXTRA_NAMES
+    asset[~valid] = 0.0
 
     first_valid = np.where(valid.any(axis=0), valid.argmax(axis=0), T)
     age = np.arange(T)[:, None] - first_valid[None, :]
