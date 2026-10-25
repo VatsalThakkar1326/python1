@@ -8,10 +8,14 @@ A crypto trading research system built from scratch:
    Built with no look-ahead (tested).
 3. **Mark I model** (PyTorch): reads every coin at once and predicts, for **any horizon from
    1 minute to 1 day**, a range of likely future returns (7 quantiles) for every coin.
-4. **Decision engine**: turns those forecast curves into buy / hold / sell / dip-exit / stop
-   decisions, net of trading costs, with fractional-Kelly sizing and risk limits.
-5. **Simulator**: our own minute-bar exchange simulator with fees, spread, slippage, market
+4. **RL decision layer** (our own PPO): learns portfolio weights from Mark I's forecast curves
+   and the portfolio state, rewarded by real equity growth after costs in the simulator.
+   Hard safety rails (position caps, stop-loss, drawdown brake) wrap every decision.
+5. **Rule-based decision engine**: the baseline the RL layer must beat. Cost-aware
+   buy / hold / sell / dip-exit / stop rules with fractional-Kelly sizing.
+6. **Simulator**: our own minute-bar exchange simulator with fees, spread, slippage, market
    impact, latency, partial fills, limit and stop orders.
+7. **Dashboard**: every backtest writes an interactive `report.html`.
 
 ## How the model maps to the design
 
@@ -55,9 +59,21 @@ mark1 build --start 2021-01-01
 # 3) Train (uses the GPU automatically). Start medium, then scale up.
 mark1 train --run-dir runs/v1 --d-model 128 --n-layers 3 --batch-size 128 --steps 50000 --num-workers 6
 
-# 4) Backtest the trained model through the simulator on the held-out test period
-mark1 backtest --run-dir runs/v1
+# 4) Score the best checkpoint on the held-out test period
+mark1 evaluate --run-dir runs/v1
+
+# 5) Backtest model + rule engine through the simulator; opens as runs/v1/backtest_test/report.html
+mark1 backtest --run-dir runs/v1 --decision-every 15
+
+# 6) RL decision layer, stage 1: PPO on top of the frozen forecaster
+mark1 rl --run-dir runs/v1 --stage 1 --total-steps 2000000 --n-envs 16 --n-steps 256 --d-model 128
+
+# 7) RL stage 2: fuse forecaster and policy, fine-tune together (quantile loss keeps the forecaster honest)
+mark1 rl --run-dir runs/v1 --stage 2 --init-from runs/v1/rl_stage1/policy.pt --total-steps 500000
 ```
+
+RL results land in `runs/v1/rl_stage1/results.json`: the policy's test-period metrics next to the
+rule engine and buy-and-hold on the same period and costs.
 
 Short on RAM? Use fewer years (`--start 2024-01-01` for both download and build).
 
@@ -77,6 +93,19 @@ Every evaluation prints, per horizon:
 All numbers come from data the model never trained on (validation and a final test period,
 separated by a 1-day gap so no future returns leak).
 
+## How the RL layer is set up
+
+| Piece | Choice |
+|---|---|
+| Observation | Mark I quantiles for every coin and horizon (in units of round-trip cost), each coin's weight, P&L and time held, cash, exposure, drawdown, time left |
+| Action | N+1 logits (coins + cash), turned into long-only portfolio weights by a softmax |
+| Reward | log equity growth per step after every fee, spread and impact cost, minus a drawdown penalty |
+| Safety rails | per-coin cap, gross cap, stop-loss with cooldown, drawdown brake, minimum trade size; the agent cannot override them |
+| Algorithm | our own PPO (clipped objective, GAE with time-limit bootstrapping, KL early stop) |
+| Stage 1 | Mark I frozen; forecasts precomputed and cached |
+| Stage 2 | Mark I inside the policy; policy gradients flow into it (slowed 10x) while a quantile loss on real future returns anchors it |
+| Selection | best validation Sharpe over full-period deterministic runs, then one test-period score |
+
 ## Project layout
 
 ```
@@ -85,8 +114,10 @@ src/mark1/
   data/                  Binance archive downloader, minute-grid loader, Panel container
   features/              causal feature builder, continuous-horizon targets
   model/                 network, dataset/splits/normalisation, training, inference
-  decide/                decision engine (forecast curves -> target weights)
+  decide/                rule-based decision engine (forecast curves -> target weights)
+  rl/                    PPO, trading environment, allocation policy, staged training
   sim/                   our market simulator
+  backtest.py, report.py end-to-end backtest and the HTML dashboard
   cli.py                 `mark1` command
 tests/                   pytest suite (look-ahead checks included)
 research_notes/, reports/  the background research behind the design
